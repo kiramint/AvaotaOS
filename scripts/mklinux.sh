@@ -429,4 +429,4 @@ gen_debian_file
 gen_package_doc
 pack_kernel_packages
 
-echo "${LINUX_CONFIG}" > ${workspace}/${BOARD}-kernel-pkgs/.done
+echo "${LINUX_CONFIG}-${LINUX_PATHDIR}" > ${workspace}/${BOARD}-kernel-pkgs/.done

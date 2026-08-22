@@ -119,6 +119,10 @@ ${SYS_PASSWORD}
 y
 EOF
 
+# video/render: /dev/dri/* 访问权限, SSH/TTY 下 GPU 加速必需 (否则静默回落 llvmpipe)
+# dialout/tty:   串口设备访问
+chroot ${workspace}/rootfs_dir usermod -aG video,render,dialout,tty ${SYS_USER}
+
 # username：avaota
 # password：avaota
 

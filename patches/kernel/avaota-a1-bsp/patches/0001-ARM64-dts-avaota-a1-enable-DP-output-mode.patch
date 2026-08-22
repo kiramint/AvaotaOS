@@ -1,0 +1,19 @@
+--- a/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts
++++ b/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts
+@@ -523,7 +523,15 @@
+ };
+ 
+ &drm_edp {
+-	status = "disabled";
++	/*
++	 * The onboard DP connector is wired to the eDP controller PHY.
++	 * Use the "allwinner,drm-dp" mode so the connector reads the monitor
++	 * EDID over the AUX channel (auto resolution & hotplug) instead of
++	 * relying on the fixed /edp_panel timings, which do not apply to
++	 * external DP monitors.
++	 */
++	compatible = "allwinner,drm-dp";
++	status = "okay";
+ 
+ 	edp_colordepth = <8>; /* 6/8/10/12/16 */
+ 	edp_color_fmt = <0>; /* 0:RGB  1: YUV444  2: YUV422 */

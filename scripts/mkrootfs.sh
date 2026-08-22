@@ -92,13 +92,13 @@ UMOUNT_ALL(){
 }
 
 run_debootstrap(){
-    if [[ "${VERSION}" == "jammy" || "${VERSION}" == "focal" || "${VERSION}" == "noble" ]];then
+    if [[ "${VERSION}" == "jammy" || "${VERSION}" == "noble" ]];then
         LIST="main multiverse restricted universe"
         SRC_LIST="'deb ${MIRROR} ${VERSION} main multiverse restricted universe' \
                   'deb ${MIRROR} ${VERSION}-updates main multiverse restricted universe'"
-    elif [[ "${VERSION}" == "bullseye" || "${VERSION}" == "bookworm" || "${VERSION}" == "trixie" ]];then
-        SRC_LIST="'deb ${MIRROR} ${VERSION} main contrib non-free non-free-firmware' \
-                  'deb ${MIRROR} ${VERSION}-updates main contrib non-free non-free-firmware'"
+    else
+        echo "unsupported version: ${VERSION} (only jammy/noble)"
+        exit 2
     fi
     
     BASE_PKGS=$(cat ../os/${VERSION}/base-packages.list)
@@ -135,21 +135,13 @@ run_debootstrap(){
 }
 
 prepare_apt-list(){
-if [[ "${VERSION}" == "jammy" || "${VERSION}" == "focal" ]];then
+if [[ "${VERSION}" == "jammy" ]];then
     cat ../os/${VERSION}/apt-list/sources.list > ${ROOTFS}/etc/apt/sources.list
     sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" ${ROOTFS}/etc/apt/sources.list
 elif [ "${VERSION}" == "noble" ];then
     echo "# Ubuntu sources have moved to /etc/apt/sources.list.d/ubuntu.sources" > ${ROOTFS}/etc/apt/sources.list
     cat ../os/${VERSION}/apt-list/ubuntu.sources > ${ROOTFS}/etc/apt/sources.list.d/ubuntu.sources
     sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${MIRROR}|g" ${ROOTFS}/etc/apt/sources.list.d/ubuntu.sources
-elif [ "${VERSION}" == "bullseye" ];then
-    cat ../os/${VERSION}/apt-list/sources.list > ${ROOTFS}/etc/apt/sources.list
-    sed -i "s|http://deb.debian.org|${MIRROR}|g" ${ROOTFS}/etc/apt/sources.list
-elif [[ "${VERSION}" == "bookworm" || "${VERSION}" == "trixie" ]];then
-    rm ${ROOTFS}/etc/apt/sources.list
-    cat ../os/${VERSION}/apt-list/debian.sources > ${ROOTFS}/etc/apt/sources.list.d/debian.sources
-    sed -i "s|http://deb.debian.org/debian|${MIRROR}|g" ${ROOTFS}/etc/apt/sources.list.d/debian.sources
-    sed -i "s|VERSION|${VERSION}|g" ${ROOTFS}/etc/apt/sources.list.d/debian.sources
 fi
 }
 
@@ -194,6 +186,23 @@ if [ "$HOST_ARCH" != "$ARCH" ];then
     fi
 else
 echo "You are running this script on a ${ARCH} mechine, progress...."
+fi
+}
+
+setup_display_fixes(){
+# BSP sun4i-drm 驱动的 primary plane 广播 AFBC modifier, 但其 GEM 导入路径
+# 拒绝带 AFBC modifier 的跨节点 AddFB2 (mutter: renderD128 渲染 -> card0 扫描输出),
+# 导致 GDM/gnome-shell 黑屏 ("gbm_surface_lock_front_buffer failed")。
+# 强制 mutter 使用 LINEAR buffer 绕过, 见 AGENTS.md 问题二。
+if [ "${TYPE}" == "gnome" ];then
+    echo "apply gnome display fixes (mutter linear buffers)."
+    mkdir -p ${ROOTFS}/etc/systemd/system/gdm3.service.d
+    cat <<'EOF' > ${ROOTFS}/etc/systemd/system/gdm3.service.d/10-no-kms-modifiers.conf
+[Service]
+Environment=MUTTER_DEBUG_USE_KMS_MODIFIERS=0
+EOF
+    grep -q '^MUTTER_DEBUG_USE_KMS_MODIFIERS=0$' ${ROOTFS}/etc/environment 2>/dev/null || \
+        echo 'MUTTER_DEBUG_USE_KMS_MODIFIERS=0' >> ${ROOTFS}/etc/environment
 fi
 }
 
@@ -261,6 +270,7 @@ setup_dhcp
 #fi
 
 setup_firstrun
+setup_display_fixes
 clean_rootfs
 setup_hostname_fstab
 #pack_target_pcakages

@@ -127,8 +127,6 @@ input_box(){
         temp=`mktemp -t test.XXXXXX`
         dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Boards" --menu "select board" 15 60 2 \
             avaota-a1 "Avaota A1" \
-            avaota-c1 "Avaota C1" \
-            dshanpi-a1 "DShanPi A1" \
             2> $temp
         if [ $? == 1 ];then
           exit 2
@@ -142,12 +140,8 @@ input_box(){
     if [ "${VERSION}" == "none" ];then
         temp=`mktemp -t test.XXXXXX`
         dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "System Distro" --menu "select distro" 15 60 2 \
-            focal "Ubuntu 20.04" \
             jammy "Ubuntu 22.04" \
             noble "Ubuntu 24.04" \
-            bullseye "Debian 11" \
-            bookworm "Debian 12" \
-            trixie "Debian 13" \
             2> $temp
         if [ $? == 1 ];then
           exit 2
@@ -162,9 +156,6 @@ input_box(){
         dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "System Type" --menu "select desktop" 15 60 2 \
             cli "Console Version" \
             gnome "Gnome Desktop" \
-            xfce "XFCE Desktop" \
-            kde "Kde Desktop" \
-            lxqt "LXQT Desktop" \
             2> $temp
         if [ $? == 1 ];then
           exit 2
@@ -222,11 +213,7 @@ input_box(){
     fi
     
     if [ "${MIRROR}" == "none" ];then
-        if [[ "${VERSION}" == "jammy" || "${VERSION}" == "noble" || "${VERSION}" == "focal" ]];then
-            MIRROR=http://ports.ubuntu.com
-        elif [[ "${VERSION}" == "bookworm" || "${VERSION}" == "trixie" ]];then
-            MIRROR=http://deb.debian.org/debian
-        fi
+        MIRROR=http://ports.ubuntu.com
     fi
     
     if [ "${EXTRA_ARGS}" == "yes" ];then
@@ -333,6 +320,20 @@ EXTRA_ARGS=no
 default_param
 parseargs "$@" || help $?
 
+# 仅支持 Avaota A1 / Ubuntu 22.04 & 24.04 / cli & gnome
+if [ "x${BOARD}" != "xnone" ] && [ "x${BOARD}" != "xavaota-a1" ];then
+    echo "ERROR: unsupported board '${BOARD}', only avaota-a1 is supported."
+    exit 2
+fi
+if [ "x${VERSION}" != "xnone" ] && [[ "x${VERSION}" != "xjammy" && "x${VERSION}" != "xnoble" ]];then
+    echo "ERROR: unsupported version '${VERSION}', only jammy/noble are supported."
+    exit 2
+fi
+if [ "x${TYPE}" != "xnone" ] && [[ "x${TYPE}" != "xcli" && "x${TYPE}" != "xgnome" ]];then
+    echo "ERROR: unsupported type '${TYPE}', only cli/gnome are supported."
+    exit 2
+fi
+
 input_box
 print_args
 
@@ -358,7 +359,7 @@ else
 fi
 
 if [[ -f ${workspace}/${BOARD}-kernel-pkgs/.done && \
-    $(cat ${workspace}/${BOARD}-kernel-pkgs/.done) == "${LINUX_CONFIG}" ]];then
+    $(cat ${workspace}/${BOARD}-kernel-pkgs/.done) == "${LINUX_CONFIG}-${LINUX_PATHDIR}" ]];then
     echo "found kernel packages, skip build kernel."
 else
     sudo bash ../scripts/mklinux.sh -b ${BOARD} -k ${KERNEL_MENUCONFIG} -g ${KERNEL_TARGET} -e ${USE_CCACHE}
