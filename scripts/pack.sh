@@ -108,7 +108,7 @@ setup_users(){
 #SYS_PASSWORD=avaota
 #ROOT_PASSWORD=avaota
 
-cat <<EOF | chroot ${workspace}/rootfs_dir adduser ${SYS_USER} && addgroup ${SYS_USER} sudo
+cat <<EOF | LC_ALL=C LANGUAGE=C LANG=C chroot ${workspace}/rootfs_dir adduser ${SYS_USER}
 ${SYS_USER}
 ${SYS_PASSWORD}
 ${SYS_PASSWORD}
@@ -119,14 +119,15 @@ ${SYS_PASSWORD}
 y
 EOF
 
+# sudo 并入 usermod: 新版 adduser (>=3.137, noble+) 已删除 addgroup 双参数用法
 # video/render: /dev/dri/* 访问权限, SSH/TTY 下 GPU 加速必需 (否则静默回落 llvmpipe)
 # dialout/tty:   串口设备访问
-chroot ${workspace}/rootfs_dir usermod -aG video,render,dialout,tty ${SYS_USER}
+chroot ${workspace}/rootfs_dir usermod -aG sudo,video,render,dialout,tty ${SYS_USER}
 
 # username：avaota
 # password：avaota
 
-cat <<EOF | chroot ${workspace}/rootfs_dir passwd root
+cat <<EOF | LC_ALL=C LANGUAGE=C LANG=C chroot ${workspace}/rootfs_dir passwd root
 ${ROOT_PASSWORD}
 ${ROOT_PASSWORD}
 EOF
@@ -139,6 +140,18 @@ pack_sdcard()
 {
 
     cd ${workspace}
+    if [ ! -f ${workspace}/rootfs-${VERSION}-${TYPE}.tar.gz ];then
+        echo "rootfs-${VERSION}-${TYPE}.tar.gz not found, build rootfs first!"
+        exit 2
+    fi
+    if [ ! -d ${workspace}/deb-data ];then
+        echo "deb-data not found, build kernel packages first!"
+        exit 2
+    fi
+    if [ ! -d ${workspace}/${BOARD}-kernel-pkgs ];then
+        echo "kernel packages not found, build kernel packages first!"
+        exit 2
+    fi
     if [ -f ${workspace}/sdcard.img ];then rm -rf ${workspace}/sdcard.img; fi
     if [ -d ${workspace}/rootfs_dir ];then rm -rf ${workspace}/rootfs_dir; fi
     
@@ -177,7 +190,7 @@ pack_sdcard()
     mount ${bootpart} ${workspace}/rootfs_dir/boot
     cp -r ${workspace}/${BOARD}-kernel-pkgs ${workspace}/rootfs_dir/kernel-deb
     
-    cat <<EOF | LC_ALL=C LANGUAGE=C LANG=C chroot ${workspace}/rootfs_dir
+    cat <<EOF | LC_ALL=C LANGUAGE=C LANG=C chroot ${workspace}/rootfs_dir /bin/bash
 apt-get remove linux-libc-dev -y
 dpkg -i /kernel-deb/linux-libc-dev*.deb
 apt-get -f install -y

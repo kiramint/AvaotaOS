@@ -58,8 +58,17 @@ parseargs()
     done
 }
 
+check_linux_tree()
+{
+    if [ -d ${workspace}/linux ] && [ ! -f ${workspace}/linux/scripts/Kbuild.include ];then
+        echo "linux source tree incomplete, remove and re-clone..."
+        rm -rf ${workspace}/linux
+    fi
+}
+
 clone_linux()
 {
+    check_linux_tree
     if [ -d ${workspace}/linux ];then
         pushd ${workspace}/linux
         git remote -v update
@@ -85,22 +94,18 @@ clone_linux()
     fi
 }
 
-clone_syterkit()
+check_linux_complete()
 {
-    if [ -d ${workspace}/${BL_CONFIG} ];then
-    	pushd ${workspace}/${BL_CONFIG}
-        rm -rf build-${BOARD}
-        git pull
-        popd
-    else
-        git clone --depth=1 ${SYTERKIT_REPO} -b ${SYTERKIT_BRANCH} ${BL_CONFIG}
+    if [ ! -f ${workspace}/linux/scripts/Kbuild.include ];then
+        echo "Fetch linux source incomplete, please check network and retry."
+        exit 2
     fi
 }
 
 clone_atf()
 {
-    if [ -d ${workspace}/${BL_CONFIG} ];then
-    	pushd ${workspace}/${BL_CONFIG}
+    if [ -d ${workspace}/atf ];then
+    	pushd ${workspace}/atf
         git pull
         popd
     else
@@ -126,6 +131,7 @@ clone_u-boot()
 {
     if [ -d ${workspace}/${BL_CONFIG} ];then
     	pushd ${workspace}/${BL_CONFIG}
+        git checkout -- . 2>/dev/null
         git pull
         popd
     else
@@ -147,9 +153,7 @@ if [[ ${LINUX_REPO:0:18} == "https://github.com" && ${GITHUB_MIRROR} != "no" ]];
     LINUX_REPO=${GITHUB_MIRROR}/${LINUX_REPO}
 fi
 
-if [ ${BL_CONFIG} == "sunxi-syterkit" ];then
-    clone_syterkit
-elif [ ${BL_CONFIG} == "sunxi-uboot" ];then
+if [ ${BL_CONFIG} == "sunxi-uboot" ];then
     clone_atf
     clone_u-boot
 elif [ ${BL_CONFIG} == "rockchip-uboot" ];then
@@ -158,6 +162,7 @@ elif [ ${BL_CONFIG} == "rockchip-uboot" ];then
 fi
 
 clone_linux
+check_linux_complete
 
 if [[ ! -d ${workspace}/${BL_CONFIG} && ! -d ${workspace}/linux ]];then
     echo "Fetch sources error, please check your network connection."

@@ -76,13 +76,22 @@ patch_kernel()
     targetdir=$2
     if [ -d ${workspace}/../patches/kernel/${patchdev}/patches ];then
         for pth in $(ls ${workspace}/../patches/kernel/${patchdev}/patches)
-    	do
+	do
         	cp ${workspace}/../patches/kernel/${patchdev}/patches/${pth} ${targetdir}
         	pushd ${targetdir}
-        	patch -p1 < ${pth}
+        	if patch -p1 --dry-run < ${pth} >/dev/null 2>&1;then
+            	patch -N -p1 < ${pth}
+        	elif patch -R -p1 --dry-run < ${pth} >/dev/null 2>&1;then
+            	echo "patch ${pth} already applied, skip."
+        	else
+            	echo "ERROR: patch ${pth} cannot be applied, exit."
+            	rm ${pth}
+            	popd
+            	exit 2
+        	fi
         	rm ${pth}
         	popd
-    	done
+	done
     fi
     
     if [ -d ${workspace}/../patches/kernel/${patchdev}/files ];then

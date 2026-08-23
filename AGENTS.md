@@ -1,6 +1,11 @@
 # Avaota A1 (T527) 显示问题排查记录
 
-> 更新时间: 2026-08-22 (修复已固化进构建系统)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
+> 更新时间: 2026-08-23 (构建系统已切主线 u-boot)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
+
+## 构建默认值调整 (2026-08-23)
+
+- `build_all.sh` `default_param()`: VERSION 默认 **noble**, TYPE 默认 **gnome**, MIRROR 默认 **https://mirrors.ustc.edu.cn/ubuntu-ports/** (其余默认值不变)
+- sudo 策略: 删除 mkrootfs.sh 的 `/etc/sudoers.d/010_avaota-nopassword` (NOPASSWD); avaota 进 sudo 组由 pack.sh `usermod -aG sudo,video,render,dialout,tty` 完成, **sudo 需要密码**
 > 本仓库是系统编译脚本。运行系统排查修复已固化进构建系统 (见下"构建系统集成"章节); 已部署系统可用 `scripts/fix-display.sh` 修复。
 
 ## 构建系统集成 (2026-08-22, 本次改动)
@@ -18,6 +23,50 @@
 - 内核补丁机制: `boards/avaota-a1.conf` `LINUX_PATHDIR="avaota-a1-bsp"` → mklinux.sh `patch_kernel()` 应用 `patches/kernel/avaota-a1-bsp/{patches,files}/`
 - 内核包缓存判断已改为 `${LINUX_CONFIG}-${LINUX_PATHDIR}` (build_all.sh + mklinux.sh), 修改补丁后会正确触发重建
 - 内核配置补充要点 (对比通用 Ubuntu 5.15 config, 参考 config 为 x86 需按符号核对): **SECURITY/APPARMOR** (Ubuntu 用户态强依赖, 原版整体关闭!), CGROUP_FREEZER/VETH/NF_TABLES (容器/防火墙), WIREGUARD/TUN/VXLAN/BONDING/VLAN (VPN/虚拟网络), BTRFS/XFS/NTFS/ISO9660/UDF (移动介质), FANOTIFY/BINFMT_MISC, CRYPTO_USER_API/CHACHA20POLY1305/ECDSA, FTRACE/KPROBES/PSI/TASKSTATS (可观测), DEVFREQ_THERMAL (GPU 过热降频), GPIO_SYSFS/HIDRAW/IIO/UIO/PTP/USB gadget mass storage
+
+## 构建健壮性修复 (2026-08-23)
+
+起因: 一次被中断的 `git clone --depth=1` 留下半截 linux 工作树 (缺 `scripts/` 等, git status 7 万+删除), fetch.sh 走 `git pull` 路径未察觉, make 报 `scripts/Kbuild.include: 没有那个文件或目录`。同时暴露多个级联问题, 已修复:
+
+- **fetch.sh**: `clone_linux()` 前置 `check_linux_tree()` (哨兵文件 `scripts/Kbuild.include` 缺失 → 删树重克隆); 克隆后 `check_linux_complete()` 校验, 不完整 exit 2
+- **mklinux.sh**: `patch_kernel()` 改幂等非交互 — dry-run 三态: 可应用→`patch -N -p1`; 已应用→skip; 冲突→exit 2。此前重复构建会交互式问 "Assume -R?" 且被答 y → **把 dts 补丁反向卸载**
+- **build_all.sh**: mklinux/mkrootfs 后校验产物 (.done / rootfs tar), 失败即 exit 2; `mkdir rootfs` 改 `mkdir -p` (原来 File exists 失败会经 `&&` 静默跳过 mkrootfs)
+- **pack.sh**: `pack_sdcard()` 入口校验 rootfs tar / deb-data / kernel-pkgs 存在 (原来对缺失文件 du 得空值 → `$(( *3+256++880 ))` 算术错误)
+- **boards/avaota-a1.conf**: `SYTERKIT_BRANCH` dev→main (上游 YuzukiHD/SyterKit 已删 dev 分支, 现仅剩 main/0.5.0)
+
+### 第二轮 (同日, mmdebstrap/binfmt 与 bootloader 假 .done)
+
+- **主机侧根因**: `qemu-user-static` 未安装 (可能被 autoremove), `/proc/sys/fs/binfmt_misc/` 无 qemu-aarch64 条目 → mmdebstrap 报 `arm64 can neither be executed natively nor via qemu user emulation`。修复: 新版 Ubuntu (25.04+) 上 `qemu-user-static` 已是**虚拟包**, 真实包名 `qemu-user-binfmt`(-hwe); 旧版直接装 `qemu-user-static`。装后 `sudo systemctl restart systemd-binfmt`, 验证 `/proc/sys/fs/binfmt_misc/qemu-aarch64` 存在。**已集成**: build_all.sh `ensure_qemu_binfmt()` 自适应安装三种包名并校验注册; 同时删除上游笔误的 `apt install diaout` (包不存在, 每次报错)
+- **mkrootfs.sh**: run_debootstrap 前置 binfmt 检查 (缺失给出修复命令); mmdebstrap 失败 exit 2; 成功后校验 `${ROOTFS}/bin/sh`。此前失败后仍继续跑完并打出垃圾 tar
+- **bootloader-sunxi-syterkit.sh**: build/apply 全程 fail-fast — 源码目录缺失、cmake/make 失败、产物 cp 失败均 exit 2; `.done` 只在全部产物 (uInitrd/extlinux/bl31/scp/splash/bootloader-syterkit.bin) 校验通过后写入。此前 syterkit 克隆失败时 cp 全静默失败但 `.done` 照写 → build_all 误判跳过 → pack 时 dd 找不到 bin
+- **build_all.sh**: bootloader 跳过条件增加 `-f bootloader-syterkit.bin` (仅 .done 不可信)
+- **write_bootloader()**: dd 前校验 bin 存在
+- **注意**: 垃圾产物 `rootfs-*.tar.gz` / `sdcard.img` 需手动删除, 否则被当作有效缓存跳过对应构建步骤
+
+### 第三轮 (同日, SyterKit main 分支工具链 / pack.sh chroot)
+
+- **SyterKit main 分支 `avaota-a1.cmake` 强制要求 `LINARO_GCC_721_PATH`** (gcc-linaro-7.2.1 arm-linux-gnueabi), 而 releases.linaro.org **已停服** (301 → linaro.org/contact)。修复: `patches/bootloader/avaota-a1/0001-*.patch` 回退系统 `arm-none-eabi-gcc` (gcc 14.2, 已实测完整编译出 `extlinux_boot_bin_card.bin`); `bootloader-sunxi-syterkit.sh` `patch_bootloader()` 幂等应用 (dry-run 三态, 同 patch_kernel); `build_bootloader` 每次重建前 `rm -rf build-${BOARD}` (清掉失败 configure 的 CMakeCache); fetch.sh `clone_syterkit` pull 前 `git checkout -- .` (还原补丁避免冲突)
+- **pack.sh 裸 `chroot rootfs_dir` heredoc**: 无命令时 chroot 执行 `$SHELL` → 主机 root shell 是 zsh → `chroot: failed to run command '/usr/bin/zsh'` 且 **内核 deb 安装段整体没跑**。修复: 显式 `chroot ... /bin/bash`
+- **pack.sh `cat <<EOF | chroot adduser X && addgroup X sudo`**: 优先级使 addgroup 跑在**主机** ("使用双参数运行 addgroup 是未定义行为")。修复: addgroup 移入独立 `chroot ... addgroup ${SYS_USER} sudo`; 后发现 **noble 的 adduser ≥3.137 重写版删除了 addgroup 双参数用法** (chroot 内同样报 "addgroup with two arguments is an unspecified operation"), 最终改为并入 `usermod -aG sudo,video,render,dialout,tty` (usermod 属 passwd 包, 不受影响)。期间 adduser/passwd chroot 补 `LC_ALL=C` 消 perl locale 告警
+- **build_all.sh**: mkbootloader 后校验 `.done` + `bootloader-syterkit.bin`, 失败即 exit 2
+
+## Bootloader 切换: SyterKit → 主线 u-boot (2026-08-23, 第四轮)
+
+SyterKit main 分支工具链问题 (第三轮) 之后, 应用户要求整体切换到**主线 u-boot**。方案与 Armbian `sun55iw3` family 一致 (已在 Armbian 上验证可启动 A1):
+
+| 组件 | 来源 | 说明 |
+|---|---|---|
+| u-boot | 主线 `v2026.07` tag | `avaota-a1_defconfig` 2025-07 由 Andre Przywara 合入主线; 含 AXP717 PMIC + DRAM 调参 |
+| BL31 (ATF) | `jernejsk/arm-trusted-firmware` 分支 `a523-v4`, `PLAT=sun55i_a523 DEBUG=1` | **主线 ATF 无 sun55i plat**; Jernej Skrabec (A523 移植合作者) 的 fork |
+| 板级补丁 | `patches/u-boot/avaota-a1/` (4 个, 移植自 Armbian v2026.07-sunxi64) | SD 卡检测 broken-cd / CLDO3 供电 / eMMC 修复 / defconfig 加 SPI-MTD |
+
+- **已实测**: 本机完整编译 ATF bl31 (41K) + u-boot 补丁版 (950K `u-boot-sunxi-with-spl.bin`, 无 binman blob 警告)
+- **为何不用主线 master**: Armbian 方案基于 v2026.07 tag + 补丁, 跟随已验证组合; master 的 sun55i gmac1 等仍在活跃变动
+- **为何不用 AvaotaSBC/u-boot fork**: 那是 Allwinner 2018.07 SDK 树 (android 启动流, 无 extlinux/distro boot), SD 启动需私有 boot0, 不可用
+- **boot 流**: u-boot distro_bootcmd 扫描 FAT 分区 `/extlinux/extlinux.conf` (pack.sh 现有布局 /Image /dtb/ /uInitrd 兼容); 写卡仍是 `dd seek=8` (8KB 偏移, u-boot 约 1MB, 分区从 16MB 起, 无冲突)
+- **改动**: `boards/avaota-a1.conf` (BL_CONFIG=sunxi-uboot + UBOOT/ATF/PLAT/BL_CONF/BL_PATCHDIR); 重写 `bootloader-sunxi-uboot.sh` (fail-fast + 幂等补丁 + distclean); fetch.sh clone_atf 修目录判断 bug (原来误查 BL_CONFIG 目录, atf 永远不会更新/重克隆)、clone_u-boot pull 前还原补丁; build_all.sh bootloader 产物名校验通用化 (sunxi-uboot → bootloader-u-boot.bin)
+- **删除**: `scripts/lib/bootloader/bootloader-sunxi-syterkit.sh`, `patches/bootloader/`, fetch.sh clone_syterkit
+- **旧 SyterKit 产物清理** (root 属主, 需手动): `sudo rm -rf build_dir/sunxi-syterkit build_dir/bootloader-avaota-a1 build_dir/bootloader-syterkit.bin build_dir/sdcard.img build_dir/sdcard.img.xz`
 
 ## 硬件/软件背景
 

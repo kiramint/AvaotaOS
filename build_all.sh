@@ -28,317 +28,331 @@ Options:
   -h, --help                          Show command help.
 "
 
-help()
-{
-    echo "$__usage"
-    exit $1
+help() {
+  echo "$__usage"
+  exit $1
 }
 
 default_param() {
-    BOARD=none
-    VERSION=none
-    TYPE=none
-    SYS_USER=avaota
-    SYS_PASSWORD=avaota
-    ROOT_PASSWORD=avaota
-    KERNEL_MENUCONFIG=none
-    KERNEL_TARGET=none
-    MIRROR=none
-    GITHUB_MIRROR=none
-    LOCAL=no
-    KERNEL_ONLY=none
-    USE_CCACHE=no
+  BOARD=none
+  VERSION=noble
+  TYPE=gnome
+  SYS_USER=avaota
+  SYS_PASSWORD=avaota
+  ROOT_PASSWORD=avaota
+  KERNEL_MENUCONFIG=none
+  KERNEL_TARGET=none
+  MIRROR=https://mirrors.ustc.edu.cn/ubuntu-ports/
+  GITHUB_MIRROR=none
+  LOCAL=no
+  KERNEL_ONLY=none
+  USE_CCACHE=no
 }
 
-parseargs()
-{
-    if [ "x$#" == "x0" ]; then
-        EXTRA_ARGS=yes
-        return 0
-    fi
+parseargs() {
+  if [ "x$#" == "x0" ]; then
+    EXTRA_ARGS=yes
+    return 0
+  fi
 
-    while [ "x$#" != "x0" ];
-    do
-        if [ "x$1" == "x-h" -o "x$1" == "x--help" ]; then
-            return 1
-        elif [ "x$1" == "x" ]; then
-            shift
-        elif [ "x$1" == "x-b" -o "x$1" == "x--board" ]; then
-            BOARD=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-m" -o "x$1" == "x--mirror" ]; then
-            MIRROR=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-v" -o "x$1" == "x--version" ]; then
-            VERSION=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-t" -o "x$1" == "x--type" ]; then
-            TYPE=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-u" -o "x$1" == "x--user" ]; then
-            SYS_USER=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-p" -o "x$1" == "x--password" ]; then
-            SYS_PASSWORD=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-s" -o "x$1" == "x--supassword" ]; then
-            ROOT_PASSWORD=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-k" -o "x$1" == "x--kernelmenuconfig" ]; then
-            KERNEL_MENUCONFIG=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-g" -o "x$1" == "x--kerneltarget" ]; then
-            KERNEL_TARGET=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-l" -o "x$1" == "x--local" ]; then
-            LOCAL=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-i" -o "x$1" == "x--githubmirror" ]; then
-            GITHUB_MIRROR=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-o" -o "x$1" == "x--kernelonly" ]; then
-            KERNEL_ONLY=`echo $2`
-            shift
-            shift
-        elif [ "x$1" == "x-e" -o "x$1" == "x--ccache" ]; then
-            USE_CCACHE=`echo $2`
-            shift
-            shift
-        else
-            echo `date` - ERROR, UNKNOWN params "$@"
-            return 2
-        fi
-    done
+  while [ "x$#" != "x0" ]; do
+    if [ "x$1" == "x-h" -o "x$1" == "x--help" ]; then
+      return 1
+    elif [ "x$1" == "x" ]; then
+      shift
+    elif [ "x$1" == "x-b" -o "x$1" == "x--board" ]; then
+      BOARD=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-m" -o "x$1" == "x--mirror" ]; then
+      MIRROR=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-v" -o "x$1" == "x--version" ]; then
+      VERSION=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-t" -o "x$1" == "x--type" ]; then
+      TYPE=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-u" -o "x$1" == "x--user" ]; then
+      SYS_USER=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-p" -o "x$1" == "x--password" ]; then
+      SYS_PASSWORD=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-s" -o "x$1" == "x--supassword" ]; then
+      ROOT_PASSWORD=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-k" -o "x$1" == "x--kernelmenuconfig" ]; then
+      KERNEL_MENUCONFIG=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-g" -o "x$1" == "x--kerneltarget" ]; then
+      KERNEL_TARGET=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-l" -o "x$1" == "x--local" ]; then
+      LOCAL=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-i" -o "x$1" == "x--githubmirror" ]; then
+      GITHUB_MIRROR=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-o" -o "x$1" == "x--kernelonly" ]; then
+      KERNEL_ONLY=$(echo $2)
+      shift
+      shift
+    elif [ "x$1" == "x-e" -o "x$1" == "x--ccache" ]; then
+      USE_CCACHE=$(echo $2)
+      shift
+      shift
+    else
+      echo $(date) - ERROR, UNKNOWN params "$@"
+      return 2
+    fi
+  done
 }
 
-input_box(){
-    if [ "${BOARD}" == "none" ];then
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Boards" --menu "select board" 15 60 2 \
-            avaota-a1 "Avaota A1" \
-            2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        BOARD=$(cat $temp)
-        clear
-        rm $temp
+input_box() {
+  if [ "${BOARD}" == "none" ]; then
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Boards" --menu "select board" 15 60 2 \
+      avaota-a1 "Avaota A1" \
+      2>$temp
+    if [ $? == 1 ]; then
+      exit 2
     fi
-    source boards/${BOARD}.conf
-    
-    if [ "${VERSION}" == "none" ];then
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "System Distro" --menu "select distro" 15 60 2 \
-            jammy "Ubuntu 22.04" \
-            noble "Ubuntu 24.04" \
-            2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        VERSION=$(cat $temp)
-        clear
-        rm $temp
-    fi
-    
-    if [ "${TYPE}" == "none" ];then
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "System Type" --menu "select desktop" 15 60 2 \
-            cli "Console Version" \
-            gnome "Gnome Desktop" \
-            2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        TYPE=$(cat $temp)
-        clear
-        rm $temp
-    fi
-    
-    if [ "${KERNEL_MENUCONFIG}" == "none" ];then
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Kernel Configure" --menu "select configure" 15 60 2 \
-            no "Dont't run kernel menuconfig" \
-            yes "Run kernel menuconfig" \
-            2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        KERNEL_MENUCONFIG=$(cat $temp)
-        clear
-        rm $temp
-    fi
-    
-    if [ "${KERNEL_TARGET}" == "none" ];then
-        IFS=',' read -ra PRNT_BRCHS <<< "${KERNEL_BRANCH}"
-        PRNT_BNH=$(for PRNT_BRCH in "${PRNT_BRCHS[@]}"; do
-            echo -n "${PRNT_BRCH} Kernel-Branch "
-        done)
-        
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Kernel Target" --menu "select target" 15 60 2 \
-            ${PRNT_BNH} \
-            2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        KERNEL_TARGET=$(cat $temp)
-        clear
-        rm $temp
-    fi
-    source boards/${BOARD}.conf
-    
-    if [ "${KERNEL_ONLY}" == "none" ];then
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Only Build Kernel" --menu "only kernel" 15 60 2 \
-            no "Build all" \
-            yes "Only build kernel packages." \
-            2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        KERNEL_ONLY=$(cat $temp)
-        clear
-        rm $temp
-    fi
-    
-    if [ "${MIRROR}" == "none" ];then
-        MIRROR=http://ports.ubuntu.com
-    fi
-    
-    if [ "${EXTRA_ARGS}" == "yes" ];then
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
-            --title "Create System Normal User" \
-            --inputbox "User Name:" 15 60 "${SYS_USER}" 2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        SYS_USER=$(cat $temp)
-        rm $temp
-
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
-            --title "Create System Normal User Password" \
-            --inputbox "User Password:" 15 60 "${SYS_PASSWORD}" 2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        SYS_PASSWORD=$(cat $temp)
-        rm $temp
-
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
-            --title "Change ROOT Password" \
-            --inputbox "ROOT Password:" 15 60 "${ROOT_PASSWORD}" 2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        ROOT_PASSWORD=$(cat $temp)
-        rm $temp
-
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
-            --title "Change DEB Mirror" \
-            --inputbox "Mirror URL:" 15 60 "${MIRROR}" 2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        MIRROR=$(cat $temp)
-        rm $temp
-        
-        if [ "${GITHUB_MIRROR}" == "none" ];then
-        temp=`mktemp -t test.XXXXXX`
-        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Use GitHub Mirror" --menu "github mirror" 15 60 2 \
-            no "Dont't use Github Proxy" \
-            yes "Use Github Proxy" \
-            2> $temp
-        if [ $? == 1 ];then
-          exit 2
-        fi
-        
-        IF_GITHUB_MIRROR=$(cat $temp)
-        if [ ${IF_GITHUB_MIRROR} == "yes" ];then
-            in_temp=`mktemp -t test.XXXXXX`
-            dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
-                --title "Setup GitHub Mirror" \
-                --inputbox "Github Mirror URL:" 15 60 "https://mirror.ghproxy.com" 2> $in_temp
-            if [ $? == 1 ];then
-              exit 2
-            fi
-            GITHUB_MIRROR=$(cat $in_temp)
-            rm $in_temp
-        elif [ ${IF_GITHUB_MIRROR} == "no" ];then
-            GITHUB_MIRROR="no"
-        fi
-        clear
-        rm $temp
-        fi
-    fi
+    BOARD=$(cat $temp)
     clear
+    rm $temp
+  fi
+  source boards/${BOARD}.conf
+
+  if [ "${VERSION}" == "none" ]; then
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "System Distro" --menu "select distro" 15 60 2 \
+      jammy "Ubuntu 22.04" \
+      noble "Ubuntu 24.04" \
+      2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    VERSION=$(cat $temp)
+    clear
+    rm $temp
+  fi
+
+  if [ "${TYPE}" == "none" ]; then
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "System Type" --menu "select desktop" 15 60 2 \
+      cli "Console Version" \
+      gnome "Gnome Desktop" \
+      2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    TYPE=$(cat $temp)
+    clear
+    rm $temp
+  fi
+
+  if [ "${KERNEL_MENUCONFIG}" == "none" ]; then
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Kernel Configure" --menu "select configure" 15 60 2 \
+      no "Dont't run kernel menuconfig" \
+      yes "Run kernel menuconfig" \
+      2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    KERNEL_MENUCONFIG=$(cat $temp)
+    clear
+    rm $temp
+  fi
+
+  if [ "${KERNEL_TARGET}" == "none" ]; then
+    IFS=',' read -ra PRNT_BRCHS <<<"${KERNEL_BRANCH}"
+    PRNT_BNH=$(for PRNT_BRCH in "${PRNT_BRCHS[@]}"; do
+      echo -n "${PRNT_BRCH} Kernel-Branch "
+    done)
+
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Kernel Target" --menu "select target" 15 60 2 \
+      ${PRNT_BNH} \
+      2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    KERNEL_TARGET=$(cat $temp)
+    clear
+    rm $temp
+  fi
+  source boards/${BOARD}.conf
+
+  if [ "${KERNEL_ONLY}" == "none" ]; then
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Only Build Kernel" --menu "only kernel" 15 60 2 \
+      no "Build all" \
+      yes "Only build kernel packages." \
+      2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    KERNEL_ONLY=$(cat $temp)
+    clear
+    rm $temp
+  fi
+
+  if [ "${MIRROR}" == "none" ]; then
+    MIRROR=http://ports.ubuntu.com
+  fi
+
+  if [ "${EXTRA_ARGS}" == "yes" ]; then
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
+      --title "Create System Normal User" \
+      --inputbox "User Name:" 15 60 "${SYS_USER}" 2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    SYS_USER=$(cat $temp)
+    rm $temp
+
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
+      --title "Create System Normal User Password" \
+      --inputbox "User Password:" 15 60 "${SYS_PASSWORD}" 2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    SYS_PASSWORD=$(cat $temp)
+    rm $temp
+
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
+      --title "Change ROOT Password" \
+      --inputbox "ROOT Password:" 15 60 "${ROOT_PASSWORD}" 2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    ROOT_PASSWORD=$(cat $temp)
+    rm $temp
+
+    temp=$(mktemp -t test.XXXXXX)
+    dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
+      --title "Change DEB Mirror" \
+      --inputbox "Mirror URL:" 15 60 "${MIRROR}" 2>$temp
+    if [ $? == 1 ]; then
+      exit 2
+    fi
+    MIRROR=$(cat $temp)
+    rm $temp
+
+    if [ "${GITHUB_MIRROR}" == "none" ]; then
+      temp=$(mktemp -t test.XXXXXX)
+      dialog --clear --shadow --backtitle "AvaotaOS Build Framework" --title "Use GitHub Mirror" --menu "github mirror" 15 60 2 \
+        no "Dont't use Github Proxy" \
+        yes "Use Github Proxy" \
+        2>$temp
+      if [ $? == 1 ]; then
+        exit 2
+      fi
+
+      IF_GITHUB_MIRROR=$(cat $temp)
+      if [ ${IF_GITHUB_MIRROR} == "yes" ]; then
+        in_temp=$(mktemp -t test.XXXXXX)
+        dialog --clear --shadow --backtitle "AvaotaOS Build Framework" \
+          --title "Setup GitHub Mirror" \
+          --inputbox "Github Mirror URL:" 15 60 "https://mirror.ghproxy.com" 2>$in_temp
+        if [ $? == 1 ]; then
+          exit 2
+        fi
+        GITHUB_MIRROR=$(cat $in_temp)
+        rm $in_temp
+      elif [ ${IF_GITHUB_MIRROR} == "no" ]; then
+        GITHUB_MIRROR="no"
+      fi
+      clear
+      rm $temp
+    fi
+  fi
+  clear
 }
 
-print_args(){
-    echo "+-------[ Config Info ]--------"
-    echo "| BOARD=${BOARD}"
-    echo "| VERSION=${VERSION}"
-    echo "| ARCH=${ARCH}"
-    echo "| TYPE=${TYPE}"
-    echo "| SYS_USER=${SYS_USER}"
-    echo "| SYS_PASSWORD=${SYS_PASSWORD}"
-    echo "| ROOT_PASSWORD=${ROOT_PASSWORD}"
-    echo "| MIRROR=${MIRROR}"
-    echo "| KERNEL_MENUCONFIG=${KERNEL_MENUCONFIG}"
-    echo "| KERNEL_TARGET=${KERNEL_TARGET}"
-    echo "| LOCAL=${LOCAL}"
-    echo "| GITHUB_MIRROR=${GITHUB_MIRROR}"
-    echo "| KERNEL_ONLY=${KERNEL_ONLY}"
-    echo "| USE_CCACHE=${USE_CCACHE}"
-    echo "| LINUX_REPO=${LINUX_REPO}"
-    echo "| LINUX_BRANCH=${LINUX_BRANCH}"
-    echo "| LINUX_CONFIG=${LINUX_CONFIG}"
-    echo "+-------------------------------"
-    echo "You can run the following command at the next time:"
-    echo "sudo bash build_all.sh -b ${BOARD} -m ${MIRROR} -v ${VERSION} -t ${TYPE} -u ${SYS_USER} -p ${SYS_PASSWORD} -s ${ROOT_PASSWORD} -k ${KERNEL_MENUCONFIG} -g ${KERNEL_TARGET} -l ${LOCAL} -i ${GITHUB_MIRROR} -o ${KERNEL_ONLY} -e ${USE_CCACHE}"
-    echo "--------------------------------"
+print_args() {
+  echo "+-------[ Config Info ]--------"
+  echo "| BOARD=${BOARD}"
+  echo "| VERSION=${VERSION}"
+  echo "| ARCH=${ARCH}"
+  echo "| TYPE=${TYPE}"
+  echo "| SYS_USER=${SYS_USER}"
+  echo "| SYS_PASSWORD=${SYS_PASSWORD}"
+  echo "| ROOT_PASSWORD=${ROOT_PASSWORD}"
+  echo "| MIRROR=${MIRROR}"
+  echo "| KERNEL_MENUCONFIG=${KERNEL_MENUCONFIG}"
+  echo "| KERNEL_TARGET=${KERNEL_TARGET}"
+  echo "| LOCAL=${LOCAL}"
+  echo "| GITHUB_MIRROR=${GITHUB_MIRROR}"
+  echo "| KERNEL_ONLY=${KERNEL_ONLY}"
+  echo "| USE_CCACHE=${USE_CCACHE}"
+  echo "| LINUX_REPO=${LINUX_REPO}"
+  echo "| LINUX_BRANCH=${LINUX_BRANCH}"
+  echo "| LINUX_CONFIG=${LINUX_CONFIG}"
+  echo "+-------------------------------"
+  echo "You can run the following command at the next time:"
+  echo "sudo bash build_all.sh -b ${BOARD} -m ${MIRROR} -v ${VERSION} -t ${TYPE} -u ${SYS_USER} -p ${SYS_PASSWORD} -s ${ROOT_PASSWORD} -k ${KERNEL_MENUCONFIG} -g ${KERNEL_TARGET} -l ${LOCAL} -i ${GITHUB_MIRROR} -o ${KERNEL_ONLY} -e ${USE_CCACHE}"
+  echo "--------------------------------"
 }
 
-sudo apt-get install gcc-arm-none-eabi cmake build-essential gcc-aarch64-linux-gnu mtools qemu-user-static bc pkg-config dialog -y
+ensure_qemu_binfmt() {
+  if [ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+    return 0
+  fi
+  # 旧版 Ubuntu 真实包名为 qemu-user-static; 新版 (25.04+) 已改为虚拟包, 实际是 qemu-user-binfmt(-hwe)
+  sudo apt-get install -y qemu-user-static 2>/dev/null || \
+    sudo apt-get install -y qemu-user-binfmt || \
+    sudo apt-get install -y qemu-user-binfmt-hwe
+  sudo systemctl restart systemd-binfmt 2>/dev/null || true
+  if [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ]; then
+    echo "ERROR: qemu-aarch64 binfmt_misc still not registered after install, fix manually and retry."
+    exit 2
+  fi
+  echo "qemu-aarch64 binfmt registered."
+}
+
+sudo apt-get install gcc-arm-none-eabi cmake build-essential gcc-aarch64-linux-gnu mtools bc pkg-config dialog -y
 sudo apt install mmdebstrap ubuntu-keyring debian-keyring automake autoconf gcc make pixz libconfuse2 libconfuse-common libconfuse-dev -y
+ensure_qemu_binfmt
 
 EXTRA_ARGS=no
 default_param
 parseargs "$@" || help $?
 
 # 仅支持 Avaota A1 / Ubuntu 22.04 & 24.04 / cli & gnome
-if [ "x${BOARD}" != "xnone" ] && [ "x${BOARD}" != "xavaota-a1" ];then
-    echo "ERROR: unsupported board '${BOARD}', only avaota-a1 is supported."
-    exit 2
+if [ "x${BOARD}" != "xnone" ] && [ "x${BOARD}" != "xavaota-a1" ]; then
+  echo "ERROR: unsupported board '${BOARD}', only avaota-a1 is supported."
+  exit 2
 fi
-if [ "x${VERSION}" != "xnone" ] && [[ "x${VERSION}" != "xjammy" && "x${VERSION}" != "xnoble" ]];then
-    echo "ERROR: unsupported version '${VERSION}', only jammy/noble are supported."
-    exit 2
+if [ "x${VERSION}" != "xnone" ] && [[ "x${VERSION}" != "xjammy" && "x${VERSION}" != "xnoble" ]]; then
+  echo "ERROR: unsupported version '${VERSION}', only jammy/noble are supported."
+  exit 2
 fi
-if [ "x${TYPE}" != "xnone" ] && [[ "x${TYPE}" != "xcli" && "x${TYPE}" != "xgnome" ]];then
-    echo "ERROR: unsupported type '${TYPE}', only cli/gnome are supported."
-    exit 2
+if [ "x${TYPE}" != "xnone" ] && [[ "x${TYPE}" != "xcli" && "x${TYPE}" != "xgnome" ]]; then
+  echo "ERROR: unsupported type '${TYPE}', only cli/gnome are supported."
+  exit 2
 fi
 
 input_box
 print_args
 
-if [ ! -d build_dir ];then
-    mkdir build_dir
+if [ ! -d build_dir ]; then
+  mkdir build_dir
 fi
 cd build_dir
 workspace=$(pwd)
@@ -347,41 +361,65 @@ ROOTFS=${workspace}/rootfs
 
 source ../boards/${BOARD}.conf
 
-if [ ${LOCAL} == "no" ];then
-    sudo bash ../scripts/fetch.sh -b ${BOARD} -i ${GITHUB_MIRROR} -g ${KERNEL_TARGET}
+if [ ${LOCAL} == "no" ]; then
+  sudo bash ../scripts/fetch.sh -b ${BOARD} -i ${GITHUB_MIRROR} -g ${KERNEL_TARGET}
 fi
 
-if [[ -f ${workspace}/bootloader-${BOARD}/.done && \
-    $(cat ${workspace}/bootloader-${BOARD}/.done) == "${BOARD}" ]];then
-    echo "found bootloader file, skip build bootloader."
+# bootloader 产物名: sunxi-uboot -> bootloader-u-boot.bin (其余: 剥 sunxi- 前缀)
+if [ "${BL_CONFIG}" == "sunxi-uboot" ];then
+  BL_BIN="bootloader-u-boot.bin"
 else
-    sudo bash ../scripts/mkbootloader.sh -b ${BOARD}
+  BL_BIN="bootloader-${BL_CONFIG#sunxi-}.bin"
 fi
 
-if [[ -f ${workspace}/${BOARD}-kernel-pkgs/.done && \
-    $(cat ${workspace}/${BOARD}-kernel-pkgs/.done) == "${LINUX_CONFIG}-${LINUX_PATHDIR}" ]];then
-    echo "found kernel packages, skip build kernel."
+if [[ -f ${workspace}/bootloader-${BOARD}/.done &&
+  $(cat ${workspace}/bootloader-${BOARD}/.done) == "${BOARD}" &&
+  -f ${workspace}/${BL_BIN} ]]; then
+  echo "found bootloader file, skip build bootloader."
 else
-    sudo bash ../scripts/mklinux.sh -b ${BOARD} -k ${KERNEL_MENUCONFIG} -g ${KERNEL_TARGET} -e ${USE_CCACHE}
+  sudo bash ../scripts/mkbootloader.sh -b ${BOARD}
 fi
 
-if [ ${KERNEL_ONLY} == "yes" ];then
-    echo "Only build kernel packages."
-    exit 0
+if [[ ! -f ${workspace}/bootloader-${BOARD}/.done ||
+  ! -f ${workspace}/${BL_BIN} ]];then
+  echo "bootloader build failed!"
+  exit 2
 fi
 
-if [ -f ${workspace}/rootfs-${VERSION}-${TYPE}.tar.gz ];then
-    echo "found rootfs tar, skip build rootfs."
+if [[ -f ${workspace}/${BOARD}-kernel-pkgs/.done &&
+  $(cat ${workspace}/${BOARD}-kernel-pkgs/.done) == "${LINUX_CONFIG}-${LINUX_PATHDIR}" ]]; then
+  echo "found kernel packages, skip build kernel."
 else
-    sudo mkdir ${ROOTFS} && sudo bash ../scripts/mkrootfs.sh -m ${MIRROR} -r ${ROOTFS} -v ${VERSION} -b ${BOARD} -t ${TYPE}
+  sudo bash ../scripts/mklinux.sh -b ${BOARD} -k ${KERNEL_MENUCONFIG} -g ${KERNEL_TARGET} -e ${USE_CCACHE}
+fi
+
+if [ ! -f ${workspace}/${BOARD}-kernel-pkgs/.done ];then
+  echo "kernel packages build failed!"
+  exit 2
+fi
+
+if [ ${KERNEL_ONLY} == "yes" ]; then
+  echo "Only build kernel packages."
+  exit 0
+fi
+
+if [ -f ${workspace}/rootfs-${VERSION}-${TYPE}.tar.gz ]; then
+  echo "found rootfs tar, skip build rootfs."
+else
+  sudo mkdir -p ${ROOTFS} && sudo bash ../scripts/mkrootfs.sh -m ${MIRROR} -r ${ROOTFS} -v ${VERSION} -b ${BOARD} -t ${TYPE}
+fi
+
+if [ ! -f ${workspace}/rootfs-${VERSION}-${TYPE}.tar.gz ];then
+  echo "rootfs build failed!"
+  exit 2
 fi
 sudo bash ../scripts/pack.sh -b ${BOARD} -t ${TYPE} -v ${VERSION} -u ${SYS_USER} -p ${SYS_PASSWORD} -s ${ROOT_PASSWORD}
 
 AVA_VERSION=$(cat ../VERSION)
-if [ -f sdcard.img.xz ];then
-    mv sdcard.img.xz AvaotaOS-${AVA_VERSION}-${VERSION}-${TYPE}-${ARCH}-${BOARD}.img.xz
-    echo "build success."
+if [ -f sdcard.img.xz ]; then
+  mv sdcard.img.xz AvaotaOS-${AVA_VERSION}-${VERSION}-${TYPE}-${ARCH}-${BOARD}.img.xz
+  echo "build success."
 else
-    echo "sdcard.img.xz not found, build sdcard image failed!"
-    exit 2
+  echo "sdcard.img.xz not found, build sdcard image failed!"
+  exit 2
 fi

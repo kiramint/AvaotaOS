@@ -116,20 +116,37 @@ run_debootstrap(){
     if [ -d ${ROOTFS} ];then rm -rf ${ROOTFS}; fi
     mkdir ${ROOTFS}
 
+    if [ "${HOST_ARCH}" != "${ARCH}" ] && [ ! -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ];then
+        echo "ERROR: qemu-aarch64 binfmt_misc not registered on host, cannot build ${ARCH} rootfs."
+        echo "Fix: sudo apt install --reinstall qemu-user-static (或新版 Ubuntu 的 qemu-user-binfmt) && sudo systemctl restart systemd-binfmt"
+        exit 2
+    fi
+
     if [ "${ARCH}" == "arm64" ];then
         sudo mmdebstrap --architectures=arm64 \
         --include="${PACKAGES}" \
         ${VERSION} ${ROOTFS} \
         "deb ${MIRROR} ${VERSION} ${LIST}" \
-        "deb ${MIRROR} ${VERSION}-updates ${LIST}"
+        "deb ${MIRROR} ${VERSION}-updates ${LIST}" || {
+            echo "mmdebstrap failed!"
+            exit 2
+        }
     elif [ "${ARCH}" == "arm" ];then
         sudo mmdebstrap --architectures=armhf \
         --include="${PACKAGES}" \
         ${VERSION} ${ROOTFS} \
         "deb ${MIRROR} ${VERSION} ${LIST}" \
-        "deb ${MIRROR} ${VERSION}-updates ${LIST}"
+        "deb ${MIRROR} ${VERSION}-updates ${LIST}" || {
+            echo "mmdebstrap failed!"
+            exit 2
+        }
     else
         echo "unsupported arch."
+        exit 2
+    fi
+
+    if [ ! -x ${ROOTFS}/bin/sh ];then
+        echo "rootfs incomplete after mmdebstrap!"
         exit 2
     fi
 }
@@ -211,8 +228,6 @@ echo '127.0.0.1	${BOARD_NAME}' >> ${ROOTFS}/etc/hosts
 
 cat /dev/null > ${ROOTFS}/etc/hostname
 echo '${BOARD_NAME}' >> ${ROOTFS}/etc/hostname
-
-echo "avaota ALL=(ALL) NOPASSWD: ALL" >> ${ROOTFS}/etc/sudoers.d/010_avaota-nopassword
 
 cat /dev/null > ${ROOTFS}/etc/fstab
 
