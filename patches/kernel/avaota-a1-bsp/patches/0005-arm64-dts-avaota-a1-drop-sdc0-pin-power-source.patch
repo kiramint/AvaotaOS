@@ -1,0 +1,24 @@
+--- a/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts	2026-08-23 16:18:39.887956021 +0800
++++ b/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts	2026-08-23 16:18:39.892729160 +0800
+@@ -3146,3 +3146,21 @@
+ 		};
+ 	};
+ };
++
++/*
++ * PF bank IO power mode: u-boot leaves PIO_POW switch = 0 and card works.
++ * BSP pinctrl would switch it to mode 1 via power-source=<3300> (sunxi_power_switch_pf),
++ * which kills SD signalling on this board. Drop power-source from all sdc0 pin
++ * states so no voltage-mode switch happens (matches mainline dts behavior).
++ */
++&pio {
++	sdc0@0 {
++		/delete-property/ power-source;
++	};
++	sdc0@1 {
++		/delete-property/ power-source;
++	};
++	sdc0@2 {
++		/delete-property/ power-source;
++	};
++};

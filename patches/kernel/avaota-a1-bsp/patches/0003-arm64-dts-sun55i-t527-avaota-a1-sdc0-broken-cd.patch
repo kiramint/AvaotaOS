@@ -1,0 +1,14 @@
+--- a/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts	2026-08-23 14:44:08.451438286 +0800
++++ b/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts	2026-08-23 14:44:08.451556081 +0800
+@@ -2444,9 +2444,9 @@
+ 
+ &sdc0 {
+ 	bus-width = <4>;
+-	cd-gpios = <&pio PF 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
++	/* cd-gpios = <&pio PF 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */ /* PF6 CD 不可靠 */
+ 	/*non-removable;*/
+-	/*broken-cd;*/
++	broken-cd;
+ 	/*cd-inverted;*/
+ 	/*data3-detect;*/
+ 	/*card-pwr-gpios = <&pio PH 14 1 1 2 0xffffffff>;*/
