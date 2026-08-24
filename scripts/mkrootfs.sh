@@ -223,6 +223,96 @@ EOF
 fi
 }
 
+setup_initramfs_debug(){
+# Avaota A1 initramfs 调试: initramfs 下串口 shell 无输入 (RX 不通),
+# 无法手工 devmem。此 hook 在 init-premount 阶段后台循环把 SD/MMC 相关
+# 寄存器/regulator/分区表打到串口 (输出带 AVAOTA-MMCDBG: 前缀, 便于 grep)。
+# 依赖 busybox devmem (busybox-initramfs 自带, 已验证 applet 存在)。
+mkdir -p ${ROOTFS}/etc/initramfs-tools/scripts/init-premount
+# qemu-user 下 zstd 压缩极慢/假死, 强制 gzip (内核 RD_GZIP=y)
+mkdir -p ${ROOTFS}/etc/initramfs-tools/conf.d
+echo "COMPRESS=gzip" > ${ROOTFS}/etc/initramfs-tools/conf.d/avaota-compress.conf
+cat <<'EOF' > ${ROOTFS}/etc/initramfs-tools/scripts/init-premount/avaota-mmc-debug
+#!/bin/sh
+# Avaota A1 SD/MMC register auto-dump v4 (serial output only)
+# v4: HIT 时全量 dump SDMMC0 0x00-0x5C + CSDC/THLD/EDSD/DRV_DL/SAMP_DL/DS_DL
+#     (PF=0xF0 已确认: u-boot/内核 ON 窗口均 0x0F222222, pinmux 排除);
+#     v3: CLKCR 非零触发抓 ON 窗口; v2: 50ms 连采; eMMC 对照; 压低 console 噪音。
+
+PRN() { echo "AVAOTA-MMCDBG: $*"; }
+
+# mkinitramfs 生成阶段会以 "prereqs" 参数调用本脚本查询依赖, 必须立即退出;
+# 若在此路径起后台循环, 后台进程持有 stdout 管道会让 mkinitramfs 阻塞等
+# EOF (qemu 下表现为 pack 卡死), 且循环输出会被误当成 prereq 列表。
+case "$1" in
+prereqs)
+	echo ""
+	exit 0
+	;;
+esac
+
+regs_sd() {
+	# SDMMC0 全量: 0x00 GCTRL / 04 CLKCR / 08 TMOUT / 0C WIDTH / 18 CMDR /
+	# 1C CARG / 30 IMASK / 38 RINTR / 3C STAS / 40 FTRGL / 54 CSDC / 58 A12A /
+	# 5C NTSR / 140 DRV_DL / 144 SAMP_DL / 148 DS_DL
+	echo "g=$(devmem 0x04020000 2>/dev/null) c=$(devmem 0x04020004 2>/dev/null) t=$(devmem 0x04020008 2>/dev/null) w=$(devmem 0x0402000C 2>/dev/null) cmdr=$(devmem 0x04020018 2>/dev/null) carg=$(devmem 0x0402001C 2>/dev/null) imask=$(devmem 0x04020030 2>/dev/null) rintr=$(devmem 0x04020038 2>/dev/null) stas=$(devmem 0x0402003C 2>/dev/null) ftrl=$(devmem 0x04020040 2>/dev/null) csdc=$(devmem 0x04020054 2>/dev/null) a12a=$(devmem 0x04020058 2>/dev/null) ntsr=$(devmem 0x0402005C 2>/dev/null) drv=$(devmem 0x04020140 2>/dev/null) samp=$(devmem 0x04020144 2>/dev/null) dsdl=$(devmem 0x04020148 2>/dev/null)"
+}
+
+regs_emmc() {
+	echo "EMMC GCTRL=$(devmem 0x04022000 2>/dev/null) CLKCR=$(devmem 0x04022004 2>/dev/null) NTSR=$(devmem 0x0402205C 2>/dev/null) CCU838=$(devmem 0x02001838 2>/dev/null) CCU84C=$(devmem 0x0200184C 2>/dev/null)"
+}
+
+dump_static() {
+	PRN "PF380=$(devmem 0x02000380 2>/dev/null) PF384=$(devmem 0x02000384 2>/dev/null) PF388=$(devmem 0x02000388 2>/dev/null) PF390=$(devmem 0x02000390 2>/dev/null)"
+	PRN "$(regs_emmc)"
+	dmesg 2>/dev/null | tail -1 | while read l; do PRN "dmesg-last: $l"; done
+	cat /proc/partitions 2>/dev/null | while read maj min blocks name rest; do
+		case "$name" in "" | name) continue ;; esac
+		PRN "partition $name blocks=$blocks"
+	done
+}
+
+dump_burst() {
+	# CLKCR 非零 = pm ON 窗口 (idle 时被复位为 0); 命中即快照候选寄存器
+	i=0
+	hits=0
+	while [ $i -lt 150 ]; do
+		c=$(devmem 0x04020004 2>/dev/null)
+		if [ -n "$c" ] && [ "$c" != "0x00000000" ] && [ $hits -lt 3 ]; then
+			PRN "HIT$i CLKCR=$c $(regs_sd)"
+			hits=$((hits + 1))
+		fi
+		i=$((i + 1))
+	done
+	[ $hits -eq 0 ] && PRN "no ON window caught in this round"
+}
+
+dump_dyn() {
+	for r in /sys/class/regulator/regulator*; do
+		[ -d "$r" ] || continue
+		PRN "regulator $(cat $r/name 2>/dev/null): state=$(cat $r/state 2>/dev/null) uv=$(cat $r/microvolts 2>/dev/null)"
+	done
+}
+
+(
+	exec >/dev/console 2>&1
+	sleep 6
+	# 压低 console loglevel 到 3 (ERR 及以下隐藏), 重扫的 RTO 刷屏不再淹没 dump;
+	# dmesg 缓冲区不受影响
+	echo 3 > /proc/sys/kernel/printk 2>/dev/null
+	n=0
+	while [ $n -lt 40 ]; do
+		PRN "==== round $n $(date +%T) ===="
+		dump_static
+		dump_burst
+		[ $((n % 4)) -eq 0 ] && dump_dyn
+		n=$((n + 1))
+	done
+) &
+EOF
+chmod +x ${ROOTFS}/etc/initramfs-tools/scripts/init-premount/avaota-mmc-debug
+}
+
 setup_hostname_fstab(){
 echo '127.0.0.1	${BOARD_NAME}' >> ${ROOTFS}/etc/hosts
 
@@ -232,8 +322,8 @@ echo '${BOARD_NAME}' >> ${ROOTFS}/etc/hostname
 cat /dev/null > ${ROOTFS}/etc/fstab
 
 cat <<EOF >> ${ROOTFS}/etc/fstab
-LABEL=boot      /boot           vfat    defaults          0       0
-LABEL=rootfs    /               ext4    defaults,noatime  0       1
+UUID=${BOOT_UUID}  /boot           vfat    defaults          0       0
+UUID=${ROOT_UUID}  /               ext4    defaults,noatime  0       1
 EOF
 }
 
@@ -286,6 +376,7 @@ setup_dhcp
 
 setup_firstrun
 setup_display_fixes
+setup_initramfs_debug
 clean_rootfs
 setup_hostname_fstab
 #pack_target_pcakages

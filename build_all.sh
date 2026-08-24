@@ -363,6 +363,10 @@ source ../boards/${BOARD}.conf
 
 if [ ${LOCAL} == "no" ]; then
   sudo bash ../scripts/fetch.sh -b ${BOARD} -i ${GITHUB_MIRROR} -g ${KERNEL_TARGET}
+  if [ $? != 0 ];then
+    echo "fetch sources failed!"
+    exit 2
+  fi
 fi
 
 # bootloader 产物名: sunxi-uboot -> bootloader-u-boot.bin (其余: 剥 sunxi- 前缀)

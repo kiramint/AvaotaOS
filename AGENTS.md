@@ -28,7 +28,8 @@
 
 起因: 一次被中断的 `git clone --depth=1` 留下半截 linux 工作树 (缺 `scripts/` 等, git status 7 万+删除), fetch.sh 走 `git pull` 路径未察觉, make 报 `scripts/Kbuild.include: 没有那个文件或目录`。同时暴露多个级联问题, 已修复:
 
-- **fetch.sh**: `clone_linux()` 前置 `check_linux_tree()` (哨兵文件 `scripts/Kbuild.include` 缺失 → 删树重克隆); 克隆后 `check_linux_complete()` 校验, 不完整 exit 2
+- **fetch.sh**: `clone_linux()` 前置 `check_linux_tree()` (哨兵文件 `scripts/Kbuild.include` 缺失 → 删树重克隆); 克隆后 `check_linux_complete()` 校验, 不完整 exit 2; `do_clone_linux()` 3 次重试 + gitee 兜底 (AvaotaSBC/linux 浅克隆 600MB+, 网络抖动常见)
+- **build_all.sh**: fetch.sh 退出码检查 (失败即 exit 2; 此前 linux 克隆失败被无视, 继续跑 bootloader/mklinux 才在别处炸)
 - **mklinux.sh**: `patch_kernel()` 改幂等非交互 — dry-run 三态: 可应用→`patch -N -p1`; 已应用→skip; 冲突→exit 2。此前重复构建会交互式问 "Assume -R?" 且被答 y → **把 dts 补丁反向卸载**
 - **build_all.sh**: mklinux/mkrootfs 后校验产物 (.done / rootfs tar), 失败即 exit 2; `mkdir rootfs` 改 `mkdir -p` (原来 File exists 失败会经 `&&` 静默跳过 mkrootfs)
 - **pack.sh**: `pack_sdcard()` 入口校验 rootfs tar / deb-data / kernel-pkgs 存在 (原来对缺失文件 du 得空值 → `$(( *3+256++880 ))` 算术错误)
@@ -67,6 +68,108 @@ SyterKit main 分支工具链问题 (第三轮) 之后, 应用户要求整体切
 - **改动**: `boards/avaota-a1.conf` (BL_CONFIG=sunxi-uboot + UBOOT/ATF/PLAT/BL_CONF/BL_PATCHDIR); 重写 `bootloader-sunxi-uboot.sh` (fail-fast + 幂等补丁 + distclean); fetch.sh clone_atf 修目录判断 bug (原来误查 BL_CONFIG 目录, atf 永远不会更新/重克隆)、clone_u-boot pull 前还原补丁; build_all.sh bootloader 产物名校验通用化 (sunxi-uboot → bootloader-u-boot.bin)
 - **删除**: `scripts/lib/bootloader/bootloader-sunxi-syterkit.sh`, `patches/bootloader/`, fetch.sh clone_syterkit
 - **旧 SyterKit 产物清理** (root 属主, 需手动): `sudo rm -rf build_dir/sunxi-syterkit build_dir/bootloader-avaota-a1 build_dir/bootloader-syterkit.bin build_dir/sdcard.img build_dir/sdcard.img.xz`
+
+## 第五轮 (2026-08-23, 镜像无 boot 事故: 两 bug 叠加)
+
+症状: 镜像烧卡后板子完全无反应、串口无输出。排查发现 **两个致命 bug 叠加**:
+
+1. **u-boot 没写进镜像**: pack.sh 原顺序是 `UMOUNT_ALL` (kpartx -d + losetup -d 拆掉所有设备) **之后** `write_bootloader /dev/mapper/loopX` — dd 对着已拆除/僵尸的 mapper 节点写, 报成功但数据进了已删除的旧 inode (上次构建残留), 镜像 8KB 处全零, BROM 找不到 eGON.BT0 静默进 FEL。**验证手段**: `xz -dc img.xz | dd bs=1 skip=8192 count=32 | xxd` 应见 `eGON.BT0`。修复: `write_bootloader ${device}` (裸 loop) 移到 UMOUNT_ALL **之前**, dd 加 `conv=fsync`
+2. **FAT 上没有 /Image**: arm64 内核 `make install` (arch/arm64/boot/install.sh) 对未压缩 Image 命名为 **`vmlinux-<ver>`** 而非 `vmlinuz-<ver>` (40MB 的 vmlinux-* 就是 raw arm64 Image, 可 booti 直接引导), postinst 的 `mv /boot/vmlinuz-* /boot/Image` 失败 → extlinux 的 `kernel /Image` 找不到。修复: gen_image_postinst 双名字兼容 (vmlinuz- 优先, 回退 vmlinux-); gen_image_postrm 清理补 `/boot/vmlinux*`。**修已有 deb 的快通道** (免整内核重编): sudo sed 改 deb-data/image/DEBIAN/postinst 后 `dpkg-deb -b deb-data/image avaota-a1-kernel-pkgs`
+
+FAT 分区离线检查工具链 (mtools, 免 root): `xz -dc img.xz | dd bs=512 skip=32768 count=491520 of=fat.img` → `mdir -i fat.img ::` (p1 起始 32768 扇区 = OFFSET*2048, 共 491520 = BOOT_SIZE*2048-OFFSET*2048)。注意 xz 解压中报错别丢 stderr, 否则截断文件会误导排查
+
+其余排查结论: 镜像 xz 完好 (xz -t 过), mbr/分区表/ext4 正常, dtb/uInitrd/extlinux.conf 均在位
+
+## 第六轮 (2026-08-23, 换主线 u-boot 后内核启动卡死: PSCI 深度 idle)
+
+症状: u-boot/内核都能起, 串口日志走到 `cpufreq_online` 后约 21 秒 RCU stall, CPU5/6 的 idle task 卡死在 `cpuidle_enter` 不归, 板子僵死。
+
+**根因**: BSP 内核 dts (`sun55i-t527.dtsi`) 给每个 CPU 挂了 PSCI 深度 idle 态 `CPU_SLEEP_0`(0x0010000) + `CLUSTER_SLEEP_0`(0x1010000, cluster 断电)。SyterKit 自带 Allwinner monitor/scp 固件实现了这些状态; **jernejsk a523-v4 BL31 未实现** — 佐证: 主线 u-boot 同步的上游 dts (sun55i-a523.dtsi) CPU 节点**根本没有 cpu-idle-states**, Armbian 验证组合就是纯 WFI。CPU 进 CLUSTER_SLEEP 后永不返回。
+
+**修复**: `patches/kernel/avaota-a1-bsp/patches/0002-*.patch` 删除 dtsi 中全部 8 处 `cpu-idle-states` 引用 (idle-states 节点定义留着无害), cpuidle 退化为 WFI, 与主线一致。内核配置 `CONFIG_CPU_IDLE/ARM_PSCI_CPUIDLE` 不动 (无 state 节点即只剩 WFI)。
+
+- 触发内核重编需删缓存: `sudo rm build_dir/avaota-a1-kernel-pkgs/.done` (内核包缓存键是 `${LINUX_CONFIG}-${LINUX_PATHDIR}`, 补丁更新不改键值)
+- **免重编快速验证法**: 改卡上 FAT 分区 `/extlinux/extlinux.conf` 的 append 加 `cpuidle.off=1` (禁用整个 cpuidle 框架), 2 分钟可确认诊断
+- 遗留 (不致命, SyterKit 时代同样存在): CPU OPP `not supported by regulators (0V)` / `EM: invalid perf state -22` — DTB OPP 表无电压信息, cpufreq 仍可切频, 暂不处理
+
+## 第七轮 (2026-08-23, 修 idle 后暴露: BSP cpufreq 切频死循环)
+
+0002 补丁删 idle-states 后, `cpuidle_enter` 卡死消失, 但暴露下一个卡点: CPU4 (cluster1) cpufreq 首次切频卡在 `clk_set_rate → clk_change_rate → __clk_notify` (RCU stall on CPU5, 无超时死循环)。
+
+**根因**: cluster0 用 `pll-cpu1` (切频正常), cluster1 用 `pll-cpu3` (P 分频在 CPUB mux 寄存器 0x0064, 路径特殊), BSP cpufreq 驱动 (`CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM` 注册 cpufreq-dt) 对 pll-cpu3 首次切频死循环。u-boot 把 CPU 留在 768MHz (日志 "unlisted initial frequency 768000"), 不切频本可正常起。
+
+**修复**: defconfig 覆盖文件禁用 `CONFIG_AW_CPUFREQ_DT` + `CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM`, CPU 停在 u-boot 设定的 768MHz。先保证能起, DVFS 后续再评估 (OPP 表本就无电压信息)。
+
+- **免重编快速验证**: 卡上 extlinux.conf append 加 `cpufreq.off=1` (5.15 支持, 见 kernel-parameters.txt)
+- 触发重编: `sudo rm build_dir/avaota-a1-kernel-pkgs/.done`
+
+## 第八轮 (2026-08-23, psci_checker 开机自测卡死)
+
+修掉 cpufreq 后内核跑到 `psci_checker: Starting hotplug tests` → 逐个 `psci: CPU%d killed` 后卡死。`CONFIG_ARM_PSCI_CHECKER=y` 是开机对全部 CPU 做 PSCI hotplug 自测的**调试项**, jernejsk a523-v4 BL31 (WIP) 对 CPU_OFF 后再 CPU_ON 支持不完整 → 卡死。修复: defconfig 覆盖文件禁用该配置 (无生产价值)。旁证: `sunxi_dsufreq` 报 "cpufreq cpu get failed" 是我们禁用 cpufreq 的正常副作用, 无害。
+
+## 第九轮 (2026-08-23, initramfs 找不到 LABEL=rootfs)
+
+修掉 psci_checker 后内核顺利跑到 `Run /init`, 但 initramfs 报 `Gave up waiting for root file system / ALERT! LABEL=rootfs does not exist`。
+
+**根因**: SD 卡没被内核识别 (无 /dev/mmcblk0)。离线验证过镜像 p2 ext4 label 确实是 `rootfs` (e2label), 问题在内核侧卡检测: BSP 内核 dts `&sdc0` 用了 `cd-gpios = <&pio PF 6 ...>`, 该卡检测脚在 Avaota A1 上不可靠 (Armbian 对这块板也是把 u-boot 用的主线 dts 改成 `broken-cd`), 内核读不到卡 → 无根设备。
+
+**修复**: `patches/kernel/avaota-a1-bsp/patches/0003-*.patch` 把 `&sdc0` 的 `cd-gpios` 注释掉、加 `broken-cd` (恒认为有卡, mmc core 周期性重探)。
+
+- 触发重编: `sudo rm build_dir/avaota-a1-kernel-pkgs/.done`
+- 免重编快速验证: 卡上 extlinux.conf 内核参数加 `rootwait` 无效 (卡根本没识别, 不是时序问题); 直接改卡上 dtb 麻烦, 建议直接重编
+- 诊断备忘: 内核起来后卡在 initramfs shell 时, `ls /dev/mmc*` / `cat /proc/partitions` 确认有无块设备; `dmesg | grep -i mmc` 看 sdc0 探测日志
+
+### 分区识别改 UUID (2026-08-23, 与第九轮同批)
+
+从 LABEL 改为固定 UUID 识别分区 (更稳, 避免 label 冲突):
+
+- `boards/avaota-a1.conf`: 新增 `ROOT_UUID="d88a2c3e-7f4b-4e11-9c8a-5d2b1f3a6e7c"` / `BOOT_UUID="1A2B-3C4D"`; BOOTARGS `root=UUID=${ROOT_UUID}`
+- `pack.sh`: `mkfs.ext4 -L rootfs -U ${ROOT_UUID}`; `mkfs.vfat -n boot -F 32 -i 0x${BOOT_UUID//-/}` (FAT32 卷序列号, blkid 显示为 `1A2B-3C4D`)
+- `mkrootfs.sh` fstab: `UUID=${BOOT_UUID}` / `UUID=${ROOT_UUID}`
+
+注意: 改 UUID 会让三个缓存产物全部过期 (extlinux.conf 的 BOOTARGS 在 bootloader 阶段烧入、fstab 在 rootfs 阶段烧入、内核 0003 补丁), 需 `sudo rm build_dir/avaota-a1-kernel-pkgs/.done build_dir/bootloader-avaota-a1/.done build_dir/rootfs-noble-gnome.tar.gz` 后全量重编
+
+### 第十轮 (2026-08-23, CMD8 RTO: SD 卡命令全部超时)
+
+修掉 broken-cd 后, 内核识别到卡并尝试初始化, 但 CMD8 (SEND_IF_COND) / CMD55 (APP_CMD) 全部 Response Timeout —— 卡不响应任何命令。
+
+**根因**: BSP DTS `&sdc0` 的 `vmmc-supply` 注释掉, MMC 核心不知道 SD 卡电源从哪来, 无法正确配置电压/电源。虽然 `reg_cldo3` 有 `regulator-always-on`, 但 MMC 框架仍需 `vmmc-supply` 调用 `mmc_regulator_set_supply()` 做电源协商。同时 `ctl-spec-caps = <0x408>` / `cd-used-24M` / `sunxi-power-save-mode` / `sunxi-dly-208M` 等 BSP 私有属性可能干扰初始化。
+
+**修复**: `patches/kernel/avaota-a1-bsp/patches/0004-*.patch` 清理 `&sdc0` 节点:
+- 启用 `vmmc-supply = <&reg_cldo3>` (对齐主线 DTS)
+- 删除 `ctl-spec-caps` / `cd-used-24M` / `cd-set-debounce` / `sunxi-power-save-mode` / `sunxi-dly-208M` 及所有注释掉的旧属性
+- 保留: `broken-cd` / `cap-sd-highspeed` / `sd-uhs-*` / `no-sdio` / `no-mmc`
+
+触发重编: `sudo rm build_dir/avaota-a1-kernel-pkgs/.done`
+
+### 第十一轮 (2026-08-23, 0004 后仍 CMD8 RTO: PF bank IO 电源模式切换致死)
+
+0004 生效确认 (内核日志: 无 "No vmmc regulator found", vdd 21→23=cldo3 3.5V OCR 最高位; detmode:gpio polling=broken-cd), 但 CMD8/55 仍全 RTO。
+
+**排查过程**:
+- 日志 `ctl-spec-caps 428` 一度怀疑 DTB 不是新构建 → 反编译构建产物 DTB 确认有 ctl-spec-caps → 最终发现 **dtsi 基础节点 `sun55i-t527.dtsi:3806` 的 sdc0 本身就带 `ctl-spec-caps = <0x428>`** (板级 dts 只是被 0004 清了, dtsi 的还在, 板级覆盖合并后仍存在)。DTB 是正确的。
+- u-boot 实测 (卡正常可读): `PIO 0x02000000+0x340~0x350` 全 0 —— **PF bank IO 电源模式 (pow_ctrl 0x350) = 0**
+- 内核 pinctrl 应用 `sdc0_pins_a` (dtsi: `power-source = <3300>`) → `sunxi_power_switch_pf()` (pinctrl-sunxi.c:1179) 判定 0="1.8V" < 3300 → 升压路径: 0x344 bit5=1 (关自适应) + **0x350=1** + 轮询 0x348 确认。内核把 PF IO 电源模式 0→1 后卡就聋了
+- 结论 (待 u-boot mw.l 实验最终确认): **该板 PF 的 mode-1 轨不可用/语义相反, mode 0 才是能工作的状态**; u-boot 不做此切换所以能读卡
+- 排除项: `vcc-pf-supply=<&reg_pio1_8>(1.8V fixed)` 无效 —— 日志明确警告 "Dts property 'vcc-pf=*' takes no effect" (sun55iw3 power_mode_detect=true, 硬件自检承压)
+
+**修复**: `patches/kernel/avaota-a1-bsp/patches/0005-*.patch` 板级 dts 追加, 对 sdc0 三组 pin 状态 (sdc0@0/1/2) `/delete-property/ power-source` → 内核永远不触发 `sunxi_power_switch_pf`, 保持 u-boot 留下的 mode 0 (与主线 dts 行为一致, 主线这些 pin 无 power-source)。已验证 dtc 编译通过且 DTB 中 power-source 消失。
+
+- **验证实验 (u-boot, 修正版地址) 已做 (2026-08-23)**: 结果**证伪**原理论: `0x380=0x20/0x384=0x20/0x390=1` (升压路径, 与内核写法相同) 下卡**正常** → 内核 PF 升压序列无害; 但恢复时 `0x390=0` (降 1.8V) 当场杀死卡, 且重做升压**不复活** → 卡进入电压切换中断卡死态 (SD 卡经典行为, 需 VDD 真断电恢复; CLDO3 always-on, **软复位无效, 必须拔电源**)。0x388=0x444: bit2/6/10=C/G/K 处于 1.8V (对应内核 bank[C/G/K] 警告), bit5(PF)=0=3.3V
+- **当前最大嫌疑 (未证实)**: 时钟树 — 内核 CCU SMHC0 mux/分频或 CLKCR 输出时钟异常 → 卡看不到 CMD8。u-boot 参照值: GCTRL=0xa0000000, CLKCR=0x00010001 (bit16 卡时钟开), CCU 0x830/0x84c/NTSR 待采
+- 0005 补丁保留 (内核完全不碰 PF 电源寄存器 = 复刻 u-boot 环境, 排除变量), 但大概率不是根治
+- u-boot 抓内核现场方法: 卡上 FAT 的 extlinux.conf append 加 ` break=mount` → initramfs-tools 直接停 shell, busybox devmem 读寄存器; 不加则等 "Gave up waiting" 2-3 分钟
+- **initramfs 串口无输入问题 (2026-08-23)**: break=mount 能停到 busybox shell 但键盘/串口 RX 无法输入命令 (u-boot 下输入正常, 内核 console 输出正常) → 手工 devmem 不可行。替代方案: `mkrootfs.sh` `setup_initramfs_debug()` 注入 `/etc/initramfs-tools/scripts/init-premount/avaota-mmc-debug` (后台每 8s 自动 dump: GCTRL/NTSR/CCU830/84C/PF 寄存器 + CLKCR 10 连采抓活动窗 + regulator/分区/mmc dmesg, 输出带 `AVAOTA-MMCDBG:` 前缀)
+- **uInitrd 静态件问题**: extlinux.conf 加载的 `/uInitrd` 是 `target/boot/uInitrd` (**2024-04 预编译**, 不含 rootfs 的 initramfs hook); chroot 装内核 deb 时 postinst 实际生成了新 `initrd.img-<ver>` 但没被用上。`pack.sh` 已加: chroot 安装后把 initrd.img **裸拷贝**为 uInitrd
+- **MMCDBG 首轮数据判读 (2026-08-23)**: PF 电源域内核态正常 (PF390=1/3.3V, PF388 bit5=0=实际 3.3V, PF380 bit5=1) → PF 域彻底排除; cldo3=enabled 3.3V 正常; CCU830=0x8000001D (mux=osc24M M=29 → 800kHz 模块钟 = 驱动给 400kHz 2x 模式的目标值, 符合意图); CLKCR 10 连采全 0 (ON 窗口每 1.2s 仅 ~100ms, 0.2s 间隔采样大概率错过, 不确定); PFCFG0=0 单采落在 OFF 窗口 (sleep 态=gpio_in) 无法判定。**纠正误判: mmcblk1 (30.5GB 无分区) 不是 SD 卡, 是 sdc2 的空 eMMC**; SD 卡 sdc0 从首轮扫描即 RTO 仍未通。剩余嫌疑: ON 窗口内的 PFCFG0 mux / CLKCR bit16 卡时钟。hook 升级 v2: 50ms 连采 100 发抓 ON 窗口 + eMMC (0x04022000, CCU 0x838) 对照组 + console loglevel 压到 3 抗 RTO 刷屏
+- **MMCDBG v2 判读 (2026-08-23, ON 窗口抓到)**: B7/B56/B72/B88 捕获 pm ON 窗口: **CLKCR=0x00010000 (bit16 卡时钟开) ✓, NTSR=0x81710000 与 u-boot 完全一致 ✓, GCTRL=0x20000010 活跃 ✓, CCU 门控/mux/分频符合驱动意图 ✓ → 时钟树排除**。eMMC 对照组 CLKCR=0x00030000 (bit16=1) 同样正常。但 PFCFG 读数 0x00000000 — **是 hook 读错地址: 0xB4 是 PG CFG0 (空 bank), PF CFG0 实为 0x02000090** (bank_base 从 PB 起编号)。唯一未验证项 = PF pinmux。hook v3: 修正为 0x90/0xA0(PFDAT 看线电平)/0xAC(PFPULL)
+- **PF CFG0 地址疑云 (2026-08-23, v3 阶段)**: u-boot 实测 `md.l 0x02000090` = 0xffffffff×3+0 (io_disabled 模式, 不是 0x222222) → 0x90 也不是 PF! 两种布局: 传统 stride 0x24 → PF=0xB4; sun55iw3 HW_TYPE_3 stride 0x30 → PF=0xF0。待 u-boot `md.l 0x02000000 0x50` 全片 dump 找 0x00222222 定位真身。hook v3 改为 CLKCR 非零触发 (ON 窗口) + 快照候选 0x90/B4/D8/F0/120/144 + DAT(=CFG+0x10)
+- **v3 判读: PF=0xF0 实锤, pinmux 排除 (2026-08-23)**: u-boot 全片 dump + 内核 HIT 对照: PIO 布局 stride 0x30 (PB=0x30, PC=0x60, PD=0x90, PE=0xC0, **PF=0xF0**, PG=0x120, PK=0x500 特例); u-boot PF CFG0=0x0F222222, **内核 ON 窗口 AF0=0x0F222222 完全一致** (PF0-5 func2=sdc0); PG 0x120=0x22222222 = 内核使能 sdc1 (WiFi sdio) 正常。至此 pinmux/时钟/NTSR/CCU/供电/PF电源域 **全部排除**, 可测量寄存器全与 u-boot 工作态一致但卡仍 RTO。下一嫌疑: SDMMC0 控制器内部未 dump 的配置 (CSDC 0x54 / DRV_DL 0x140 / SAMP_DL 0x144 / TMOUT / STAS) 或卡被扫描周期留在锁死态。hook v4: HIT 时全量 dump SDMMC0 0x00-0x5C+延时寄存器。SDMMC 寄存器: GCTRL 0x00/CLKCR 0x04/TMOUT 0x08/WIDTH 0x0C/CMDR 0x18/CARG 0x1C/RESP 0x20/IMASK 0x30/RINTR 0x38/STAS 0x3C/FTRGL 0x40/CSDC 0x54/A12A 0x58/NTSR 0x5C/THLD 0x100/EDSD 0x10C/DRV_DL 0x140/SAMP_DL 0x144/DS_DL 0x148
+- **双重压缩事故 (2026-08-23)**: 第一版 pack.sh 用 `gzip -9 | mkimage -C gzip` 重制 uInitrd, 但 noble initramfs-tools 默认输出 zstd → 双重压缩 → 内核解出垃圾 cpio → initramfs 空 → 直落 `prepare_namespace` panic ("Cannot open root device UUID=...")。教训: **initrd.img 必须原样裸拷贝** (内核 RD_GZIP/RD_ZSTD 都有, 自动探测; u-boot booti 接受裸 initrd 不需要 mkimage 头)
+- **update-initramfs 在 chroot 里卡死 (2026-08-23)**: 两个原因: ① noble 默认 `COMPRESS=zstd`, zstd 在 qemu-user-static 模拟下压缩极慢/假死, pack 阶段 `update-initramfs: Generating...` 后长时间无输出即此。修复: pack.sh (chroot 装 deb 前) + mkrootfs.sh 写 `/etc/initramfs-tools/conf.d/avaota-compress.conf` = `COMPRESS=gzip`。② **avaota-mmc-debug hook 首版不处理 `prereqs` 参数** — mkinitramfs 生成阶段以 prereqs 调用每个脚本, 旧版直接跑正文在 chroot 里起 8 分钟后台循环, 后台进程持有 stdout 管道 → mkinitramfs 等 EOF 卡死, 且输出会被误当 prereq 列表。修复: hook 加 `case "$1" in prereqs) exit 0`, 后台循环 `exec >/dev/console 2>&1`; pack.sh 解包后从 mkrootfs.sh 重新抽取覆盖 hook (rootfs tar 里可能是旧版)。若 pack 被 Ctrl-C 中断, 残留挂载需 `sudo umount build_dir/rootfs_dir/boot; sudo losetup -D; sudo rm -rf build_dir/rootfs_dir` 再重跑
+- 触发重编: `sudo rm build_dir/avaota-a1-kernel-pkgs/.done`
+- 寄存器备忘 (修正版, 第一版 0x340/0x350 是错误寄存器——那是别的芯片类型的): sun55iw3=HW_TYPE_3=hw_info 数组 index 3, **PF 电源模式真正寄存器: sel=0x380 / ctrl=0x384 / val(状态)=0x388 / pio_pow_ctrl(开关)=0x390, PF 用 bit5** (vccio_banks={B,H} 映射 bit12, PF 不在其中); `sunxi_power_switch_pf` 升压路径: 0x380 bit5=1(reverse=true) + 0x384 bit5=1(关自适配) + **0x390=1** + 轮询 0x388 bit5 清零。PIO base 0x02000000; **PF bank 偏移: sun55iw3 bank_base 从 PB 起编号, PF=index 4 → 4×0x24=0x90** (CFG0=0x02000090, func2=sdc0 → 0x222222; DAT=0xA0; PULL=0xAC; **0xB4 是 PG 的 CFG0, v2 hook 读它全 0 一度误判 pinmux 丢失**)。SDMMC0 base 0x04020000 (GCTRL/CLKCR bit16=clock on/NTSR 0x5C); CCU 0x02001000: SMHC0 clk 0x830 (bit31 gate, mux[26:24]), BUS_SMHC0 0x84C (bit0 gate, bit16 rst)
+- u-boot 无 devmem, 用 md.l/mw.l; 注意 md.l 地址别截断 (用户曾 `md.l 0x02001` 触发 Synchronous Abort 复位)
 
 ## 硬件/软件背景
 

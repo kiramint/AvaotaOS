@@ -289,7 +289,13 @@ test -d /etc/kernel/postinst.d && run-parts --arg="LINUX_VERSION" --arg="/boot/v
 touch /boot/.next
 
 echo "AvaotaOS: FAT32 /boot: move last-installed kernel to 'Image'..."
-mv -v /boot/vmlinuz-LINUX_VERSION /boot/Image
+# arm64 内核 make install (arch/arm64/boot/install.sh) 对未压缩 Image 的命名是
+# vmlinux-VERSION 而非 vmlinuz-VERSION, 两个名字都兼容
+if [ -e /boot/vmlinuz-LINUX_VERSION ];then
+    mv -v /boot/vmlinuz-LINUX_VERSION /boot/Image
+else
+    mv -v /boot/vmlinux-LINUX_VERSION /boot/Image
+fi
 
 set +x # Disable debugging
 echo "AvaotaOS 'linux-image-BOARD' for 'LINUX_VERSION': 'postinst' finishing."
@@ -339,7 +345,7 @@ export INITRD=Yes # Tell initramfs builder whether it's wanted
 # Run the same hooks Debian/Ubuntu would for their kernel packages.
 test -d /etc/kernel/preinst.d && run-parts --arg="LINUX_VERSION" --arg="/boot/vmlinuz-LINUX_VERSION" /etc/kernel/preinst.d
 
-rm -f /boot/System.map* /boot/config* /boot/vmlinuz* /boot/Image /boot/uImage
+rm -f /boot/System.map* /boot/config* /boot/vmlinuz* /boot/vmlinux* /boot/Image /boot/uImage
 
 set +x # Disable debugging
 echo "AvaotaOS 'linux-image-BOARD' for 'LINUX_VERSION': 'preinst' finishing."

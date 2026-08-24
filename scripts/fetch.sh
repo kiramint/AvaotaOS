@@ -66,6 +66,26 @@ check_linux_tree()
     fi
 }
 
+do_clone_linux()
+{
+    cd ${workspace}
+    for attempt in 1 2 3;do
+        echo "clone linux from ${LINUX_REPO} (attempt ${attempt}/3)..."
+        git clone --depth=1 ${LINUX_REPO} -b ${LINUX_BRANCH} linux
+        if [ $? == 0 ] && [ -f ${workspace}/linux/scripts/Kbuild.include ];then
+            return 0
+        fi
+        rm -rf ${workspace}/linux
+        sleep 5
+    done
+    if [ "x${LINUX_GITEE_REPO}" != "x" ] && [ "${LINUX_GITEE_REPO}" != "${LINUX_REPO}" ];then
+        echo "clone linux from fallback ${LINUX_GITEE_REPO}..."
+        rm -rf ${workspace}/linux
+        git clone --depth=1 ${LINUX_GITEE_REPO} -b ${LINUX_BRANCH} linux
+    fi
+    return 1
+}
+
 clone_linux()
 {
     check_linux_tree
@@ -76,21 +96,13 @@ clone_linux()
         current_branch=$(git symbolic-ref --short HEAD)
         if [[ "${remote_url}" == "${LINUX_REPO}" && "${current_branch}" == "${LINUX_BRANCH}" ]];then
             git pull
+            popd
         else
-            rm -rf ${workspace}/linux
-            cd ${workspace}
-            git clone --depth=1 ${LINUX_REPO} -b ${LINUX_BRANCH} linux
-            if [ $? == 1 ];then
-              git clone --depth=1 ${LINUX_GITEE_REPO} -b ${LINUX_BRANCH} linux
-            fi
+            popd
+            do_clone_linux
         fi
-        popd
     else
-        cd ${workspace}
-        git clone --depth=1 ${LINUX_REPO} -b ${LINUX_BRANCH} linux
-        if [ $? == 1 ];then
-          git clone --depth=1 ${LINUX_GITEE_REPO} -b ${LINUX_BRANCH} linux
-        fi
+        do_clone_linux
     fi
 }
 

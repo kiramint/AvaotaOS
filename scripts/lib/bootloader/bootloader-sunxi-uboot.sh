@@ -109,5 +109,5 @@ write_bootloader(){
         echo "ERROR: bootloader-u-boot.bin not found, build bootloader first!"
         exit 2
     fi
-    dd if=${workspace}/bootloader-u-boot.bin of=$1 bs=1024 seek=8 status=noxfer
+    dd if=${workspace}/bootloader-u-boot.bin of=$1 bs=1024 seek=8 conv=fsync status=noxfer
 }

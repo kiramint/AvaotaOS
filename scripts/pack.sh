@@ -173,8 +173,8 @@ pack_sdcard()
     bootpart=/dev/mapper/${loopX}p1
     rootpart=/dev/mapper/${loopX}p2
     
-    mkfs.vfat -n boot -F 32 ${bootpart}
-    mkfs.ext4 -L rootfs ${rootpart}
+    mkfs.vfat -n boot -F 32 -i 0x${BOOT_UUID//-/} ${bootpart}
+    mkfs.ext4 -L rootfs -U ${ROOT_UUID} ${rootpart}
     
     mkdir ${workspace}/rootfs_dir
     mount ${rootpart} ${workspace}/rootfs_dir
@@ -182,6 +182,18 @@ pack_sdcard()
     tar -zxvf ${workspace}/rootfs-${VERSION}-${TYPE}.tar.gz -C ${workspace}/rootfs_dir
     
     rm -f ${workspace}/rootfs_dir/root/.bash_history
+
+    # 强制覆盖 initramfs 诊断 hook 为修复版 (rootfs tar 里可能是旧版:
+    # 旧版不处理 mkinitramfs 的 prereqs 调用, 后台循环持有 stdout 管道
+    # 导致 qemu 下 update-initramfs 卡死)
+    HOOKDIR=${workspace}/rootfs_dir/etc/initramfs-tools/scripts/init-premount
+    if [ -d "${HOOKDIR%/etc/*}" ];then
+        mkdir -p ${HOOKDIR}
+        sed -n '/^cat <<.EOF. > \${ROOTFS}\/etc\/initramfs-tools\/scripts\/init-premount\/avaota-mmc-debug$/,/^EOF$/p' \
+            ${workspace}/../scripts/mkrootfs.sh | sed '1d;$d' > ${HOOKDIR}/avaota-mmc-debug
+        chmod +x ${HOOKDIR}/avaota-mmc-debug
+        grep -q 'prereqs' ${HOOKDIR}/avaota-mmc-debug || { echo "FATAL: hook fix failed"; exit 2; }
+    fi
     
     sync
     sleep 5
@@ -189,6 +201,11 @@ pack_sdcard()
     if [ ! -d ${workspace}/rootfs_dir/boot ];then mkdir -p ${workspace}/rootfs_dir/boot; fi
     mount ${bootpart} ${workspace}/rootfs_dir/boot
     cp -r ${workspace}/${BOARD}-kernel-pkgs ${workspace}/rootfs_dir/kernel-deb
+    
+    # initramfs 压缩强制 gzip: noble 默认 zstd, 在 qemu-user 模拟下压缩极慢
+    # 甚至假死 (pack 阶段 update-initramfs 卡死无输出); 内核 RD_GZIP=y。
+    mkdir -p ${workspace}/rootfs_dir/etc/initramfs-tools/conf.d
+    echo "COMPRESS=gzip" > ${workspace}/rootfs_dir/etc/initramfs-tools/conf.d/avaota-compress.conf
     
     cat <<EOF | LC_ALL=C LANGUAGE=C LANG=C chroot ${workspace}/rootfs_dir /bin/bash
 apt-get remove linux-libc-dev -y
@@ -203,6 +220,23 @@ EOF
     
     cp -r ${workspace}/bootloader-${BOARD}/* ${workspace}/rootfs_dir/boot
     
+    # 用 chroot 内 initramfs-tools 生成的 initrd.img 作为 uInitrd。
+    # target/boot/uInitrd 是 2024-04 的静态预编译件, 不含 rootfs 里的
+    # initramfs hook (如 avaota-mmc-debug)。
+    # 必须原样裸拷贝: initrd.img 本身已带压缩 (noble 默认 zstd, RD_ZSTD=y),
+    # 内核对 raw initrd 自动探测压缩格式; 严禁再包一层 gzip —— 双重压缩
+    # 会让内核解出垃圾 cpio, initramfs 为空, 直落 prepare_namespace panic。
+    # u-boot distro boot (booti) 接受裸 initrd, 无需 mkimage uImage 头。
+    INITRD_SRC=$(ls ${workspace}/rootfs_dir/boot/initrd.img-* 2>/dev/null | head -1)
+    if [ -n "${INITRD_SRC}" ];then
+        echo "using ${INITRD_SRC##*/} as uInitrd (raw, includes initramfs hooks)"
+        rm -f ${workspace}/rootfs_dir/boot/uInitrd
+        cp -v "${INITRD_SRC}" ${workspace}/rootfs_dir/boot/uInitrd || \
+            echo "WARN: uInitrd copy failed, boot will fall back to static one"
+    else
+        echo "WARN: initrd.img not found, keeping static uInitrd"
+    fi
+    
     cp -rfp ${workspace}/../target/firmware ${workspace}/rootfs_dir/lib/
     
     setup_users
@@ -210,9 +244,11 @@ EOF
     sync
     sleep 10
     
-    UMOUNT_ALL
+    # 必须在 UMOUNT_ALL 之前写: UMOUNT_ALL 会 kpartx -d + losetup -d,
+    # 之后 /dev/mapper/loopX 已是僵尸/不存在, dd 会写丢 (曾导致镜像无 bootloader, 板子无串口输出)
+    write_bootloader ${device}
     
-    write_bootloader /dev/mapper/${loopX}
+    UMOUNT_ALL
 }
 
 xz_image()
