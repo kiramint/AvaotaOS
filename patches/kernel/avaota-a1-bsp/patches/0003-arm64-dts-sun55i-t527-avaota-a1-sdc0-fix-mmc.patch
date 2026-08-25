@@ -1,17 +1,18 @@
---- a/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts	2026-08-23 15:28:40.130179793 +0800
-+++ b/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts	2026-08-23 15:29:03.937638341 +0800
+--- a/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts
++++ b/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts
 @@ -2444,30 +2444,15 @@
  
  &sdc0 {
  	bus-width = <4>;
--	/* cd-gpios = <&pio PF 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>; */ /* PF6 CD 不可靠 */
+-	cd-gpios = <&pio PF 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 -	/*non-removable;*/
- 	broken-cd;
+-	/*broken-cd;*/
 -	/*cd-inverted;*/
 -	/*data3-detect;*/
 -	/*card-pwr-gpios = <&pio PH 14 1 1 2 0xffffffff>;*/
 -	cd-set-debounce = <0x1>;
 -	cd-used-24M;
++	broken-cd;
  	cap-sd-highspeed;
  	sd-uhs-sdr50;
  	sd-uhs-ddr50;
@@ -31,4 +32,3 @@
 +	vmmc-supply = <&reg_cldo3>;
  	status = "okay";
  };
- 

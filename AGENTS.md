@@ -135,7 +135,7 @@ FAT 分区离线检查工具链 (mtools, 免 root): `xz -dc img.xz | dd bs=512 s
 
 **根因**: BSP DTS `&sdc0` 的 `vmmc-supply` 注释掉, MMC 核心不知道 SD 卡电源从哪来, 无法正确配置电压/电源。虽然 `reg_cldo3` 有 `regulator-always-on`, 但 MMC 框架仍需 `vmmc-supply` 调用 `mmc_regulator_set_supply()` 做电源协商。同时 `ctl-spec-caps = <0x408>` / `cd-used-24M` / `sunxi-power-save-mode` / `sunxi-dly-208M` 等 BSP 私有属性可能干扰初始化。
 
-**修复**: `patches/kernel/avaota-a1-bsp/patches/0004-*.patch` 清理 `&sdc0` 节点:
+**修复**: 此项现已合并进 `patches/kernel/avaota-a1-bsp/patches/0003-*.patch`，一次性从原始 DTS 清理 `&sdc0` 节点，避免 0003/0004 修改同一区域导致重复构建时无法识别已应用补丁:
 - 启用 `vmmc-supply = <&reg_cldo3>` (对齐主线 DTS)
 - 删除 `ctl-spec-caps` / `cd-used-24M` / `cd-set-debounce` / `sunxi-power-save-mode` / `sunxi-dly-208M` 及所有注释掉的旧属性
 - 保留: `broken-cd` / `cap-sd-highspeed` / `sd-uhs-*` / `no-sdio` / `no-mmc`
@@ -144,7 +144,7 @@ FAT 分区离线检查工具链 (mtools, 免 root): `xz -dc img.xz | dd bs=512 s
 
 ### 第十一轮 (2026-08-23, 0004 后仍 CMD8 RTO: PF bank IO 电源模式切换致死)
 
-0004 生效确认 (内核日志: 无 "No vmmc regulator found", vdd 21→23=cldo3 3.5V OCR 最高位; detmode:gpio polling=broken-cd), 但 CMD8/55 仍全 RTO。
+合并后的 sdc0 修复生效确认 (内核日志: 无 "No vmmc regulator found", vdd 21→23=cldo3 3.5V OCR 最高位; detmode:gpio polling=broken-cd), 但 CMD8/55 仍全 RTO。
 
 **排查过程**:
 - 日志 `ctl-spec-caps 428` 一度怀疑 DTB 不是新构建 → 反编译构建产物 DTB 确认有 ctl-spec-caps → 最终发现 **dtsi 基础节点 `sun55i-t527.dtsi:3806` 的 sdc0 本身就带 `ctl-spec-caps = <0x428>`** (板级 dts 只是被 0004 清了, dtsi 的还在, 板级覆盖合并后仍存在)。DTB 是正确的。
@@ -170,6 +170,29 @@ FAT 分区离线检查工具链 (mtools, 免 root): `xz -dc img.xz | dd bs=512 s
 - 触发重编: `sudo rm build_dir/avaota-a1-kernel-pkgs/.done`
 - 寄存器备忘 (修正版, 第一版 0x340/0x350 是错误寄存器——那是别的芯片类型的): sun55iw3=HW_TYPE_3=hw_info 数组 index 3, **PF 电源模式真正寄存器: sel=0x380 / ctrl=0x384 / val(状态)=0x388 / pio_pow_ctrl(开关)=0x390, PF 用 bit5** (vccio_banks={B,H} 映射 bit12, PF 不在其中); `sunxi_power_switch_pf` 升压路径: 0x380 bit5=1(reverse=true) + 0x384 bit5=1(关自适配) + **0x390=1** + 轮询 0x388 bit5 清零。PIO base 0x02000000; **PF bank 偏移: sun55iw3 bank_base 从 PB 起编号, PF=index 4 → 4×0x24=0x90** (CFG0=0x02000090, func2=sdc0 → 0x222222; DAT=0xA0; PULL=0xAC; **0xB4 是 PG 的 CFG0, v2 hook 读它全 0 一度误判 pinmux 丢失**)。SDMMC0 base 0x04020000 (GCTRL/CLKCR bit16=clock on/NTSR 0x5C); CCU 0x02001000: SMHC0 clk 0x830 (bit31 gate, mux[26:24]), BUS_SMHC0 0x84C (bit0 gate, bit16 rst)
 - u-boot 无 devmem, 用 md.l/mw.l; 注意 md.l 地址别截断 (用户曾 `md.l 0x02001` 触发 Synchronous Abort 复位)
+
+### 第十二轮 (2026-08-25, CMD8 RTO 根因: Linux 将 A523 SMHC0 CCLK_DIV 写成 0)
+
+对比 SyterKit、主线 u-boot 和 Linux v5p3x 驱动后确认，phase/timing 不是根因：u-boot 工作态与 Linux 400k 默认值均为 `DRV_DL=0x00010000`（CMD 180 度、DAT 90 度）和 `NTSR=0x81710000`。u-boot 手工改 `DRV_DL=0x00030000` 后 Linux 仍 CMD8 RTO；且 Linux `set_ios()` 会覆盖 bootloader 留下的 phase 值。
+
+真正差异是 SMHC0 内部分频：
+
+- u-boot 工作态: `CLKCR=0x00010001`，即 card clock enable + `CCLK_DIV=/2`
+- Linux 失败现场: `CLKCR=0x00010000`，即 card clock enable + `CCLK_DIV=0`
+- 当前 u-boot A523 补丁已注明 `CCLK_DIV=0` 在 A523/T527 上不可用，并强制 `/2` 后将模块时钟请求乘 2补偿
+- BSP Linux `sunxi-mmc-v5p3x.c` 对 SDR 模式固定 `mod_clk=ios->clock*2, div=0`，正好生成失败现场值；时钟门、PF pinmux、CLDO3 和 CCU 看似正常，但卡实际收不到 CMD8/CMD55
+
+修复: `patches/kernel/avaota-a1-bsp/patches/0006-*.patch` 仅对 `phy_index==0` (sdc0) 使用 `mod_clk=ios->clock*4, div=1`。这样内部 `/2` 后 card clock 保持不变；不影响 sdc1/sdc2。400k 初始化的预期现场是 `CLKCR=0x00010001`，CCU SMHC0 模块钟由约 800kHz 提高到约 1.6MHz。
+
+触发重编: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done`。验证重点: Linux 日志不再出现 CMD8/CMD55 RTO，出现 `mmcblk0` 及其分区；v4 initramfs hook 的 HIT 行应显示 `CLKCR=0x00010001`。
+
+### 第十三轮 (2026-08-25, 新镜像只有 u-boot、分区全零)
+
+症状: u-boot 正常启动并识别 `mmc0`，但不显示 `Scanning mmc 0:1` / `Found /extlinux/extlinux.conf`，随后回退到空 eMMC、USB、PXE/DHCP。离线检查镜像发现 8KiB 处 `eGON.BT0` 正常，但 16MiB 处没有 FAT，rootfs 分区也为空；3.34GiB 镜像压缩后仅 843KiB。
+
+根因: 主机没有 `kpartx` 命令，旧 `pack.sh` 仍执行 `kpartx -va` 并使用 `/dev/mapper/loopXp1/p2`。mapper 分区没有创建，mkfs/mount/copy 全部失败，但脚本没有 fail-fast，最后只有对裸 loop 的 `write_bootloader` 成功，生成了只有 u-boot 的空镜像。
+
+修复: `pack.sh` 改用 `losetup -P` 直接创建 `/dev/loopXp1/p2`，彻底移除 kpartx/mapper；等待并校验分区块设备，mkfs/mount 失败立即退出。打包阶段验证 FAT/ext4 类型和 UUID、`Image`/DTB/uInitrd/extlinux、rootfs `/sbin/init`；压缩前再次从原始 `sdcard.img` 按偏移离线验证 u-boot 魔数、文件系统和 FAT 启动文件。坏镜像必须重新打包并烧录，修改 u-boot 环境无法修复缺失的文件系统。
 
 ## 硬件/软件背景
 

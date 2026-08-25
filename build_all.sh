@@ -326,8 +326,10 @@ ensure_qemu_binfmt() {
   echo "qemu-aarch64 binfmt registered."
 }
 
-sudo apt-get install gcc-arm-none-eabi cmake build-essential gcc-aarch64-linux-gnu mtools bc pkg-config dialog -y
+sudo apt-get install swig flex bison gcc-arm-none-eabi cmake build-essential gcc-aarch64-linux-gnu mtools bc pkg-config dialog -y
 sudo apt install mmdebstrap ubuntu-keyring debian-keyring automake autoconf gcc make pixz libconfuse2 libconfuse-common libconfuse-dev -y
+sudo apt install libgnutls\*
+
 ensure_qemu_binfmt
 
 EXTRA_ARGS=no

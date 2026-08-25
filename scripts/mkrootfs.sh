@@ -251,6 +251,14 @@ prereqs)
 	;;
 esac
 
+# init-premount may run before initramfs has populated /dev.  The diagnostic
+# commands below intentionally redirect errors to /dev/null, and the worker
+# writes to /dev/console; create the two standard character devices first so
+# an early /dev-less boot does not print shell redirection errors.
+mkdir -p /dev 2>/dev/null || exit 0
+[ -e /dev/null ] || mknod -m 666 /dev/null c 1 3 2>/dev/null || true
+[ -e /dev/console ] || mknod -m 600 /dev/console c 5 1 2>/dev/null || true
+
 regs_sd() {
 	# SDMMC0 全量: 0x00 GCTRL / 04 CLKCR / 08 TMOUT / 0C WIDTH / 18 CMDR /
 	# 1C CARG / 30 IMASK / 38 RINTR / 3C STAS / 40 FTRGL / 54 CSDC / 58 A12A /
@@ -295,7 +303,9 @@ dump_dyn() {
 }
 
 (
-	exec >/dev/console 2>&1
+	if [ -c /dev/console ]; then
+		exec >/dev/console 2>&1
+	fi
 	sleep 6
 	# 压低 console loglevel 到 3 (ERR 及以下隐藏), 重扫的 RTO 刷屏不再淹没 dump;
 	# dmesg 缓冲区不受影响

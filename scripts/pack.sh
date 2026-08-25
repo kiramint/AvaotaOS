@@ -95,7 +95,6 @@ UMOUNT_ALL(){
     fi
     
     if [ "x$device" != "x" ]; then
-        kpartx -d ${device}
         losetup -d ${device}
         device=""
     fi
@@ -165,19 +164,34 @@ pack_sdcard()
     parted ${workspace}/sdcard.img -s set 1 boot on
     parted ${workspace}/sdcard.img mkpart primary ext4 $((${BOOT_SIZE}*2048))s 100%
 
-    device=$(losetup -f --show -P ${workspace}/sdcard.img)
-    kpartx -va ${device}
-    loopX=${device##*\/}
-    partprobe ${device}
+    device=$(losetup -f --show -P ${workspace}/sdcard.img) || {
+        echo "ERROR: failed to attach sdcard.img to a loop device"
+        exit 2
+    }
+    partprobe ${device} || true
 
-    bootpart=/dev/mapper/${loopX}p1
-    rootpart=/dev/mapper/${loopX}p2
+    # losetup -P creates partition devices directly. Avoid kpartx mapper
+    # nodes: if kpartx is missing or leaves stale mappings, mkfs/mount can
+    # fail while the old script continues and produces an all-zero image.
+    bootpart=${device}p1
+    rootpart=${device}p2
+    for retry in $(seq 1 20);do
+        if [ -b "${bootpart}" ] && [ -b "${rootpart}" ];then
+            break
+        fi
+        partx -u ${device} >/dev/null 2>&1 || true
+        sleep 1
+    done
+    if [ ! -b "${bootpart}" ] || [ ! -b "${rootpart}" ];then
+        echo "ERROR: loop partition devices not found: ${bootpart}, ${rootpart}"
+        exit 2
+    fi
     
-    mkfs.vfat -n boot -F 32 -i 0x${BOOT_UUID//-/} ${bootpart}
-    mkfs.ext4 -L rootfs -U ${ROOT_UUID} ${rootpart}
+    mkfs.vfat -n boot -F 32 -i 0x${BOOT_UUID//-/} ${bootpart} || exit 2
+    mkfs.ext4 -L rootfs -U ${ROOT_UUID} ${rootpart} || exit 2
     
     mkdir ${workspace}/rootfs_dir
-    mount ${rootpart} ${workspace}/rootfs_dir
+    mount ${rootpart} ${workspace}/rootfs_dir || exit 2
     
     tar -zxvf ${workspace}/rootfs-${VERSION}-${TYPE}.tar.gz -C ${workspace}/rootfs_dir
     
@@ -199,7 +213,7 @@ pack_sdcard()
     sleep 5
     
     if [ ! -d ${workspace}/rootfs_dir/boot ];then mkdir -p ${workspace}/rootfs_dir/boot; fi
-    mount ${bootpart} ${workspace}/rootfs_dir/boot
+    mount ${bootpart} ${workspace}/rootfs_dir/boot || exit 2
     cp -r ${workspace}/${BOARD}-kernel-pkgs ${workspace}/rootfs_dir/kernel-deb
     
     # initramfs 压缩强制 gzip: noble 默认 zstd, 在 qemu-user 模拟下压缩极慢
@@ -243,9 +257,37 @@ EOF
     
     sync
     sleep 10
+
+    # Refuse to package an image unless both filesystems and all boot-critical
+    # files are present on the actual loop partitions.
+    if [ "$(blkid -s TYPE -o value ${bootpart})" != "vfat" ];then
+        echo "ERROR: boot partition is not FAT: ${bootpart}"
+        exit 2
+    fi
+    if [ "$(blkid -s UUID -o value ${bootpart})" != "${BOOT_UUID}" ];then
+        echo "ERROR: boot partition UUID mismatch"
+        exit 2
+    fi
+    if [ "$(blkid -s TYPE -o value ${rootpart})" != "ext4" ];then
+        echo "ERROR: root partition is not ext4: ${rootpart}"
+        exit 2
+    fi
+    if [ "$(blkid -s UUID -o value ${rootpart})" != "${ROOT_UUID}" ];then
+        echo "ERROR: root partition UUID mismatch"
+        exit 2
+    fi
+    for f in Image uInitrd extlinux/extlinux.conf dtb/${DEVICE_DTS}.dtb;do
+        if [ ! -s "${workspace}/rootfs_dir/boot/${f}" ];then
+            echo "ERROR: boot partition file missing or empty: /${f}"
+            exit 2
+        fi
+    done
+    if [ ! -x ${workspace}/rootfs_dir/sbin/init ];then
+        echo "ERROR: root filesystem has no executable /sbin/init"
+        exit 2
+    fi
     
-    # 必须在 UMOUNT_ALL 之前写: UMOUNT_ALL 会 kpartx -d + losetup -d,
-    # 之后 /dev/mapper/loopX 已是僵尸/不存在, dd 会写丢 (曾导致镜像无 bootloader, 板子无串口输出)
+    # 必须在 UMOUNT_ALL 之前写: detach loop 后再 dd 会写入错误节点。
     write_bootloader ${device}
     
     UMOUNT_ALL
@@ -255,6 +297,26 @@ xz_image()
 {
     cd ${workspace}
     if [ -f sdcard.img ];then
+        boot_offset=$((${OFFSET} * 1024 * 1024))
+        root_offset=$((${BOOT_SIZE} * 1024 * 1024))
+        if ! dd if=sdcard.img bs=1 skip=8192 count=32 status=none | grep -aq 'eGON.BT0';then
+            echo "ERROR: u-boot signature missing from sdcard.img"
+            exit 2
+        fi
+        if [ "$(blkid -p -O ${boot_offset} -s TYPE -o value sdcard.img)" != "vfat" ];then
+            echo "ERROR: FAT filesystem missing from sdcard.img"
+            exit 2
+        fi
+        if [ "$(blkid -p -O ${root_offset} -s TYPE -o value sdcard.img)" != "ext4" ];then
+            echo "ERROR: ext4 filesystem missing from sdcard.img"
+            exit 2
+        fi
+        for f in Image uInitrd extlinux/extlinux.conf dtb/${DEVICE_DTS}.dtb;do
+            if ! mdir -i "sdcard.img@@${boot_offset}" "::/${f}" >/dev/null 2>&1;then
+                echo "ERROR: /${f} missing from FAT filesystem in sdcard.img"
+                exit 2
+            fi
+        done
         pixz sdcard.img
         echo "xz success."
     else
