@@ -1,8 +1,14 @@
 [Unit]
-Description=Init Resize
- 
+Description=Expand root filesystem to fill the SD/eMMC
+DefaultDependencies=no
+After=local-fs.target
+Before=apt-daily.service apt-daily-upgrade.service
+
 [Service]
+Type=oneshot
 ExecStart=/usr/local/bin/init-resize.sh
- 
+TimeoutStartSec=180
+StandardOutput=journal+console
+
 [Install]
 WantedBy=multi-user.target

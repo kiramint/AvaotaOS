@@ -1,0 +1,13 @@
+[Unit]
+Description=Avaota A1 AIC8800 Bluetooth UART attach
+After=systemd-modules-load.service sysinit.target
+Wants=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/avaota-bluetooth.sh
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

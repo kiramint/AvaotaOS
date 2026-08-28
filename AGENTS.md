@@ -1,11 +1,11 @@
 # Avaota A1 (T527) 显示问题排查记录
 
-> 更新时间: 2026-08-23 (构建系统已切主线 u-boot)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
+> 更新时间: 2026-08-29 (已能进 systemd/GNOME; 待办见仓库根目录 status.md)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
 
 ## 构建默认值调整 (2026-08-23)
 
 - `build_all.sh` `default_param()`: VERSION 默认 **noble**, TYPE 默认 **gnome**, MIRROR 默认 **https://mirrors.ustc.edu.cn/ubuntu-ports/** (其余默认值不变)
-- sudo 策略: 删除 mkrootfs.sh 的 `/etc/sudoers.d/010_avaota-nopassword` (NOPASSWD); avaota 进 sudo 组由 pack.sh `usermod -aG sudo,video,render,dialout,tty` 完成, **sudo 需要密码**
+- sudo 策略: 删除 mkrootfs.sh 的 `/etc/sudoers.d/010_avaota-nopassword` (NOPASSWD); avaota 进 sudo 组由 pack.sh `usermod -aG sudo,video,render,dialout,tty,audio,bluetooth,plugdev` 完成, **sudo 需要密码**
 > 本仓库是系统编译脚本。运行系统排查修复已固化进构建系统 (见下"构建系统集成"章节); 已部署系统可用 `scripts/fix-display.sh` 修复。
 
 ## 构建系统集成 (2026-08-22, 本次改动)
@@ -17,7 +17,7 @@
 | DP 口 eDP→DP 模式 (EDID 自动) | `patches/kernel/avaota-a1-bsp/patches/0001-*.patch` (内核 dts: `&drm_edp` compatible 覆盖为 `allwinner,drm-dp`) |
 | cma=256M | `boards/avaota-a1.conf` BOOTARGS |
 | mutter AFBC 黑屏绕过 (仅 gnome) | `scripts/mkrootfs.sh` `setup_display_fixes()`: gdm drop-in + /etc/environment |
-| 用户组 video,render,dialout,tty | `scripts/pack.sh` `setup_users()`: usermod -aG |
+| 用户组 video,render,dialout,tty,audio,bluetooth,plugdev | `scripts/pack.sh` `setup_users()`: usermod -aG (组不存在则 `groupadd -f`) |
 | 内核缺失配置 (AppArmor/nftables/VETH/WIREGUARD/容器栈等) | `patches/kernel/avaota-a1-bsp/files/arch/arm64/configs/sun55i_t527_bsp_defconfig` (原版+追加) |
 
 - 内核补丁机制: `boards/avaota-a1.conf` `LINUX_PATHDIR="avaota-a1-bsp"` → mklinux.sh `patch_kernel()` 应用 `patches/kernel/avaota-a1-bsp/{patches,files}/`
@@ -194,6 +194,32 @@ FAT 分区离线检查工具链 (mtools, 免 root): `xz -dc img.xz | dd bs=512 s
 
 修复: `pack.sh` 改用 `losetup -P` 直接创建 `/dev/loopXp1/p2`，彻底移除 kpartx/mapper；等待并校验分区块设备，mkfs/mount 失败立即退出。打包阶段验证 FAT/ext4 类型和 UUID、`Image`/DTB/uInitrd/extlinux、rootfs `/sbin/init`；压缩前再次从原始 `sdcard.img` 按偏移离线验证 u-boot 魔数、文件系统和 FAT 启动文件。坏镜像必须重新打包并烧录，修改 u-boot 环境无法修复缺失的文件系统。
 
+### 第十四轮 (2026-08-28, 去掉 MMC 调试 hook, 系统已能进 systemd)
+
+删除 `mkrootfs.sh` `setup_initramfs_debug()` / `avaota-mmc-debug` (会压低 printk=3 盖住真故障) 以及 pack.sh 的 hook 覆盖。保留 `COMPRESS=gzip`。BOOTARGS 去掉无用的 `initcall_debug=0`。pack.sh 对旧 tar 主动 `rm` 残留 hook。0006 CCLK_DIV 补丁生效后 SD 卡 (mmcblk0) 正常, 能进 Ubuntu 24.04 systemd / GDM。
+
+### 第十五轮 (2026-08-28, 开机噪音清理 / WiFi / 音频组 / 根分区扩容)
+
+实测: 主机名曾是 `BOARDNAME` — `setup_hostname_fstab` 用单引号把 `${BOARD_NAME}` 写进文件, systemd 丢掉非法字符。已改双引号 + `127.0.1.1`。smartmontools 在无 SATA 板上 [FAILED], 已 mask。WiFi AIC8800 需 `aic8800_bsp`/`aic8800_fdrv` 自动加载 (SDIO 上电后 rescan), 已写入 `/etc/modules-load.d/aic8800.conf`; 实测 `wlan0` 已连 AP。
+
+**根分区扩容从未跑**: Ubuntu chroot 里 `systemctl enable` 会 no-op ("Running in chroot, ignoring"), `init-resize.service` 镜像里一直是 disabled。29.7G 卡只用了 3G (94%)。已改为手写 `multi-user.target.wants` 符号链接; 脚本改 `growpart`/`sfdisk` + `partx` + `resize2fs`。包列表加 `cloud-guest-utils`。板子上曾手动 `usermod -aG audio,bluetooth,plugdev`; 扩容需在板子上跑 sfdisk/resize2fs (或重打镜像)。
+
+音频: 内核 `audiocodec`/`card0` 正常, `sudo aplay -l` 能列出设备; 缺 `audio` 组时用户态 `aplay -l` 报 no soundcards。已加入组。HDMI 音频内核关了 `CONFIG_SND_SOC_SUNXI_CODEC_HDMI`, 板载 codec 不受影响。
+
+SSH: 镜像已含 openssh-server, `ssh.socket` 激活, 不必再装。WiFi IP 可直接 `ssh avaota@...`。
+
+### 第十六轮 (2026-08-28/29, 蓝牙 UART HCI 未通)
+
+AIC8800 是 WiFi=SDIO / BT=UART (uart1=`/dev/ttyAS1`, PG6-9; `bt_rst`=PG12; `bt_wake`=PG11)。WiFi 通不代表 BT 通。
+
+- `hciattach` 报 Device setup complete 但 `BD Address 00:00:00:00:00:00`、RX=0、`command 0x1001 tx timeout` = **UART 挂上了, 芯片没回包** (`any` 不等 Reset 成功)
+- 芯片默认睡死, 需 `echo 1 > /proc/bluetooth/sleep/btwrite` (TaterLi 同板验证), 该节点由 `aic8800_btlpm` 提供
+- `aic8800_btlpm` 当前内核 probe 失败 (`dev_pm_set_wake_irq` EBUSY, 用户态有时表现为 `modprobe: No such device`), 所以没有 `btwrite`
+- 另需 `rfkill unblock` 松开 `sunxi-bt` (PG12 复位); `gpiofind` 必须 sudo
+- 构建已加: `patches/.../0007-aic8800-btlpm-dont-fail-probe-on-wake-irq.patch` (wake IRQ 失败不让 probe 失败); `target/services/avaota-bluetooth/` 开机服务 (wake + `hciattach -s 1500000 /dev/ttyAS1 any 1500000 flow nosleep`); 包列表 `bluez`。**0007 需内核重编才进现卡**: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done`。**BT 仍未通, 低优先级待排查**
+
+GPU OPP 648/744/792 被拒是 **vf3920 bin 规格**, 额定最高 696MHz, 不是故障。CPU 无 cpufreq 是故意关的 (cluster1 pll-cpu3 切频死机), 8 核锁 u-boot 768MHz, **影响 CPU 性能**, 中优先级。
+
 ## 硬件/软件背景
 
 - 三个显示输出:
@@ -248,16 +274,15 @@ kmscube/modetest 是单节点路径所以能亮, 极易误导排查方向。
 
 - `/boot/extlinux/extlinux.conf`: `cma=64M` → `cma=256M` (双 2560x1440 屏需 ~90MB+ 扫描缓冲, 64M 必然 OOM; 备份 `.bak`)
 
-## 当前系统状态 (2026-08-22, DP 模式待重启验证)
+## 当前系统状态 (2026-08-29)
 
-- HDMI: connected/enabled, 有画面 (eDP 模式时期验证)
-- DP: DTB 已切 `allwinner,drm-dp` (v2), **等重启验证** ← 下次会话第一件事:
-  - `ls /sys/class/drm/` 应出现 `card0-DP-1` (不再是 eDP-1)
-  - `/sys/class/drm/card0-DP-1/status` = connected, `edid` 文件非 0 字节
-  - `dmesg | grep -iE "edp|dp"` 看 link training 与 EDID 读取
-  - 若 DP 模式失败 (HPD 不触发/无 EDID): 回滚 `sudo cp <dtb>.edp-fixed <dtb>` 即回到已验证可用的 v1, 或 `scripts/fix-display.sh --edp`
-- CmaTotal: 262144 kB
-- 一键修复脚本: `scripts/fix-display.sh` (`--dp` 默认 / `--edp` 可选, 已验证幂等)
+系统已能进 Ubuntu 24.04.4 + systemd + GDM。WiFi 可用, SSH (`ssh.socket`) 可用。待办优先级与下一步见仓库根目录 **`status.md`**。
+
+- HDMI/DP: 驱动绑定 `card0-HDMI-A-1` / `card0-DP-1`; 最近一次实测两口均为 disconnected (线未插)
+- 板载 ST7789V `fb0` 240×135 正常; panfrost renderD128 正常, GPU 最高 696MHz (vf3920)
+- SD `mmcblk0` 工作 (0006 CCLK_DIV); eMMC `mmcblk1` 29.1G 空片
+- 用户组 (构建侧已改, 现卡已手工加 audio/bluetooth/plugdev): sudo,video,render,dialout,tty,audio,bluetooth,plugdev
+- 一键显示修复: `scripts/fix-display.sh` (`--dp` 默认 / `--edp` 可选)
 
 ## GPU 栈现状 (2026-08-22 实测, Mali-G57 / Valhall)
 
@@ -269,8 +294,8 @@ kmscube/modetest 是单节点路径所以能亮, 极易误导排查方向。
 | gnome-shell 合成 | ✅ 硬件 | journal: "Created gbm renderer for card0" |
 
 - 内核驱动: 5.15 BSP panfrost, GPU id 0x9091 报 "mali-unknown" 但工作正常
-- GPU 频率被限制: OPP 648/744/792MHz 被稳压器拒绝, **实际最高 696MHz** (available_frequencies: 150M-696M)
-- 用户 `avaota` 不在 video/render 组: SSH/TTY 下跑 GL 程序会 permission denied → llvmpipe 兜底; 图形会话内经 logind 授权不受影响。修复: `sudo usermod -aG video,render avaota`
+- GPU 频率: OPP 648/744/792MHz 被拒是 **vf3920 这颗料的规格** (DTS 里这三档 opp-microvolt=0 或只给别的 bin); 额定最高 **696MHz**, 不是故障
+- 用户组: 构建侧已含 video/render; 缺组时 SSH/TTY 下 GL 会 permission denied → llvmpipe
 - 测试命令: `vulkaninfo --summary` (需 root 或组权限), `kmscube -D /dev/dri/card0` (需 chvt 抢 master)
 
 ## 排查工具备忘 (本机已装)

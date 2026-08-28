@@ -1,0 +1,17 @@
+--- a/bsp/drivers/net/wireless/aic8800/aic8800_btlpm/aic8800_btlpm.c
++++ b/bsp/drivers/net/wireless/aic8800/aic8800_btlpm/aic8800_btlpm.c
+@@ -880,9 +880,12 @@
+ 		if (ret < 0) {
+ 			BT_ERR("can't enable wakeup src for bt_hostwake %d\n",
+ 				bsi->host_wake);
+-			goto err2;
++			/* EBUSY on this SoC; keep probe so /proc/bluetooth/sleep/btwrite exists */
++			device_init_wakeup(dev, false);
++			ret = 0;
++		} else {
++			bsi->wakeup_enable = 1;
+ 		}
+-		bsi->wakeup_enable = 1;
+ 	}
+ 
+ 	bsi->ext_wake = of_get_named_gpio_flags(np, "bt_wake", 0, &config);

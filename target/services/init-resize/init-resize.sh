@@ -1,43 +1,43 @@
 #!/bin/bash
-# description: init resize root
+# Expand the root partition to fill the boot disk, then grow the ext4 fs.
+# First-boot oneshot: disable itself after a successful pass.
 
-set -e
+LOG=/var/log/resize-root.log
+mkdir -p "$(dirname "$LOG")"
+exec >>"$LOG" 2>&1
+echo "=== $(date -Is) start ==="
 
-resize_root(){
-    ROOT_PART="$(findmnt / -o source -n)"
-    ROOT_DEV="/dev/$(lsblk -no pkname "$ROOT_PART")"
-    PART_NUM="$(echo "$ROOT_PART" | grep -o "[[:digit:]]*$")"
+ROOT_PART="$(findmnt -n -o SOURCE /)"
+ROOT_DEV="/dev/$(lsblk -no pkname "$ROOT_PART")"
+PART_NUM="${ROOT_PART##*[!0-9]}"
 
-    PART_INFO=$(parted "$ROOT_DEV" -ms unit s p)
-    LAST_PART_NUM=$(echo "$PART_INFO" | tail -n 1 | cut -f 1 -d:)  # 3
-    PART_START=$(echo "$PART_INFO" | grep "^${PART_NUM}" | cut -f 2 -d: | sed 's/[^0-9]//g')
-    PART_END=$(echo "$PART_INFO" | grep "^${PART_NUM}" | cut -f 3 -d: | sed 's/[^0-9]//g')
-    ROOT_END=$(echo "$PART_INFO" | grep "^/dev"| cut -f 2 -d: | sed 's/[^0-9]//g')
-    ((ROOT_END--))
+echo "root=$ROOT_PART disk=$ROOT_DEV part=$PART_NUM"
+lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$ROOT_DEV" || true
 
-    if [ $PART_END -lt $ROOT_END ]; then
-        fdisk "$ROOT_DEV" <<EOF
-p
-d
-$PART_NUM
-n
-p
-$PART_NUM
-$PART_START
-
-p
-w
-EOF
-        resize2fs $ROOT_PART
-        echo "Reseize $ROOT_PART finished." >> /var/log/resize-root.log
-    else
-        echo "Already the largest! Do not need resize any more!" >> /var/log/resize-root.log
-    fi
-    return 0
+grow_partition() {
+	if command -v growpart >/dev/null 2>&1; then
+		# 1 = already at max (NOCHANGE), not a failure
+		growpart "$ROOT_DEV" "$PART_NUM" && return 0
+		echo "growpart: no change or skipped"
+		return 0
+	fi
+	echo ",+" | sfdisk --no-reread -N "$PART_NUM" "$ROOT_DEV" || {
+		echo "sfdisk grow skipped (already at max?)"
+		return 0
+	}
 }
 
-if resize_root; then
-    sudo systemctl disable init-resize.service
-else
-    echo "Fail to root!" >> /var/log/resize-root.log
+grow_partition
+partx -u "$ROOT_DEV" 2>/dev/null || partprobe "$ROOT_DEV" 2>/dev/null || true
+sleep 1
+
+if ! resize2fs "$ROOT_PART"; then
+	echo "resize2fs failed"
+	exit 1
 fi
+
+echo "resize done"
+df -hT /
+systemctl disable init-resize.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/multi-user.target.wants/init-resize.service
+echo "=== $(date -Is) finish ==="

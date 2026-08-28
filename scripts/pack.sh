@@ -102,6 +102,44 @@ UMOUNT_ALL(){
     set -e
 }
 
+apply_board_fixes(){
+# 旧 rootfs tar 里的 hostname 曾写成字面量 ${BOARD_NAME}, systemd 清洗后变成 BOARDNAME。
+echo "${BOARD_NAME}" > ${workspace}/rootfs_dir/etc/hostname
+sed -i -e '/BOARD_NAME/d' -e '/[[:space:]]BOARDNAME$/d' ${workspace}/rootfs_dir/etc/hosts
+if ! grep -qE "^127\.0\.1\.1[[:space:]]+${BOARD_NAME}([[:space:]]|$)" ${workspace}/rootfs_dir/etc/hosts 2>/dev/null; then
+    echo "127.0.1.1	${BOARD_NAME}" >> ${workspace}/rootfs_dir/etc/hosts
+fi
+
+mkdir -p ${workspace}/rootfs_dir/etc/modules-load.d
+cat > ${workspace}/rootfs_dir/etc/modules-load.d/aic8800.conf << 'EOF'
+aic8800_bsp
+aic8800_fdrv
+aic8800_btlpm
+EOF
+
+mkdir -p ${workspace}/rootfs_dir/usr/local/bin \
+         ${workspace}/rootfs_dir/etc/systemd/system/multi-user.target.wants
+cp ${workspace}/../target/services/init-resize/init-resize.sh \
+    ${workspace}/rootfs_dir/usr/local/bin/
+cp ${workspace}/../target/services/init-resize/init-resize.service \
+    ${workspace}/rootfs_dir/etc/systemd/system/
+chmod +x ${workspace}/rootfs_dir/usr/local/bin/init-resize.sh
+ln -sf /etc/systemd/system/init-resize.service \
+    ${workspace}/rootfs_dir/etc/systemd/system/multi-user.target.wants/init-resize.service
+
+cp ${workspace}/../target/services/avaota-bluetooth/avaota-bluetooth.sh \
+    ${workspace}/rootfs_dir/usr/local/bin/
+cp ${workspace}/../target/services/avaota-bluetooth/avaota-bluetooth.service \
+    ${workspace}/rootfs_dir/etc/systemd/system/
+chmod +x ${workspace}/rootfs_dir/usr/local/bin/avaota-bluetooth.sh
+ln -sf /etc/systemd/system/avaota-bluetooth.service \
+    ${workspace}/rootfs_dir/etc/systemd/system/multi-user.target.wants/avaota-bluetooth.service
+
+mkdir -p ${workspace}/rootfs_dir/etc/systemd/system
+ln -sf /dev/null ${workspace}/rootfs_dir/etc/systemd/system/smartmontools.service
+ln -sf /dev/null ${workspace}/rootfs_dir/etc/systemd/system/smartd.service
+}
+
 setup_users(){
 #SYS_USER=avaota
 #SYS_PASSWORD=avaota
@@ -121,7 +159,15 @@ EOF
 # sudo 并入 usermod: 新版 adduser (>=3.137, noble+) 已删除 addgroup 双参数用法
 # video/render: /dev/dri/* 访问权限, SSH/TTY 下 GPU 加速必需 (否则静默回落 llvmpipe)
 # dialout/tty:   串口设备访问
-chroot ${workspace}/rootfs_dir usermod -aG sudo,video,render,dialout,tty ${SYS_USER}
+# audio: /dev/snd (aplay 否则报 no soundcards)
+# bluetooth: BlueZ 设备节点 (旧 tar 可能还没装 bluez, 先 groupadd -f)
+# plugdev: 可移动介质 / rfkill
+chroot ${workspace}/rootfs_dir /bin/bash -c "
+groupadd -f audio
+groupadd -f bluetooth
+groupadd -f plugdev
+usermod -aG sudo,video,render,dialout,tty,audio,bluetooth,plugdev ${SYS_USER}
+"
 
 # username：avaota
 # password：avaota
@@ -197,18 +243,12 @@ pack_sdcard()
     
     rm -f ${workspace}/rootfs_dir/root/.bash_history
 
-    # 强制覆盖 initramfs 诊断 hook 为修复版 (rootfs tar 里可能是旧版:
-    # 旧版不处理 mkinitramfs 的 prereqs 调用, 后台循环持有 stdout 管道
-    # 导致 qemu 下 update-initramfs 卡死)
-    HOOKDIR=${workspace}/rootfs_dir/etc/initramfs-tools/scripts/init-premount
-    if [ -d "${HOOKDIR%/etc/*}" ];then
-        mkdir -p ${HOOKDIR}
-        sed -n '/^cat <<.EOF. > \${ROOTFS}\/etc\/initramfs-tools\/scripts\/init-premount\/avaota-mmc-debug$/,/^EOF$/p' \
-            ${workspace}/../scripts/mkrootfs.sh | sed '1d;$d' > ${HOOKDIR}/avaota-mmc-debug
-        chmod +x ${HOOKDIR}/avaota-mmc-debug
-        grep -q 'prereqs' ${HOOKDIR}/avaota-mmc-debug || { echo "FATAL: hook fix failed"; exit 2; }
-    fi
-    
+    # 旧 rootfs tar 可能仍带 MMC 寄存器 dump hook (会压低 printk 并刷屏)。
+    # 打镜像前清掉, 这样不必强制重建 rootfs。
+    rm -f ${workspace}/rootfs_dir/etc/initramfs-tools/scripts/init-premount/avaota-mmc-debug
+
+    apply_board_fixes
+
     sync
     sleep 5
     
@@ -235,8 +275,7 @@ EOF
     cp -r ${workspace}/bootloader-${BOARD}/* ${workspace}/rootfs_dir/boot
     
     # 用 chroot 内 initramfs-tools 生成的 initrd.img 作为 uInitrd。
-    # target/boot/uInitrd 是 2024-04 的静态预编译件, 不含 rootfs 里的
-    # initramfs hook (如 avaota-mmc-debug)。
+    # target/boot/uInitrd 是 2024-04 的静态预编译件, 不含当前 rootfs 的 hook。
     # 必须原样裸拷贝: initrd.img 本身已带压缩 (noble 默认 zstd, RD_ZSTD=y),
     # 内核对 raw initrd 自动探测压缩格式; 严禁再包一层 gzip —— 双重压缩
     # 会让内核解出垃圾 cpio, initramfs 为空, 直落 prepare_namespace panic。
