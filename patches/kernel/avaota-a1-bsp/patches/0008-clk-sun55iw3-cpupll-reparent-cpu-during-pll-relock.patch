@@ -1,0 +1,102 @@
+--- a/bsp/drivers/clk/sunxi-ng/ccu-sun55iw3-displl.c
++++ b/bsp/drivers/clk/sunxi-ng/ccu-sun55iw3-displl.c
+@@ -13,11 +13,13 @@
+ #include <linux/iopoll.h>
+ #include <linux/syscore_ops.h>
+ #include <linux/slab.h>
++#include <linux/delay.h>
+ #include <dt-bindings/clock/sun55iw3-displl-ccu.h>
+ 
+ #include "ccu_common.h"
+ #include "ccu_reset.h"
+ 
++#include "ccu_mux.h"
+ #include "ccu_nm.h"
+ #include "ccu_nkmp.h"
+ 
+@@ -193,14 +195,6 @@
+ 	return notifier_from_errno(ret);
+ }
+ 
+-static struct ccu_pll_nb cpupll1_nb = {
+-	.common = &pll_cpu1_clk.common,
+-	.enable = BIT(31), /* switch ssc mode */
+-	.clk_nb = {
+-		.notifier_call = cpupll_notifier_cb,
+-	},
+-};
+-
+ static struct ccu_pll_nb cpupll2_nb = {
+ 	.common = &pll_cpu2_clk.common,
+ 	.enable = BIT(31),
+@@ -209,12 +203,49 @@
+ 	},
+ };
+ 
+-static struct ccu_pll_nb cpupll3_nb = {
+-	.common = &pll_cpu3_clk.common,
+-	.enable = BIT(31),
+-	.clk_nb = {
+-		.notifier_call = cpupll_notifier_cb,
+-	},
++/*
++ * Cluster0/1 run from pll-cpu1/pll-cpu3. Relocking those PLLs while the
++ * cores still take the PLL output freezes the cluster (and can deadlock
++ * the DSU). Reparent the CPU mux to dcxo24M for the relock window.
++ *
++ * Use index 0 (dcxo24M), not pll-peri0-600m: the latter is a cross-CCU
++ * parent and was not enough to keep T527 cluster1 alive. Do this in one
++ * notifier so PRE always switches before the PLL is touched. Skip the
++ * CPU PLL SSC notifiers; enabling SSC during the same window still
++ * disturbs pll-cpu3. Restore the mux on ABORT as well as POST.
++ */
++struct sun55iw3_cpu_pll_mux_nb {
++	struct notifier_block	clk_nb;
++	struct ccu_mux		*mux;
++	u8			orig;
++};
++
++static int sun55iw3_cpu_pll_mux_notifier(struct notifier_block *nb,
++					 unsigned long event, void *data)
++{
++	struct sun55iw3_cpu_pll_mux_nb *cpu_nb =
++		container_of(nb, struct sun55iw3_cpu_pll_mux_nb, clk_nb);
++	struct ccu_mux *mux = cpu_nb->mux;
++
++	if (event == PRE_RATE_CHANGE) {
++		cpu_nb->orig = ccu_mux_helper_get_parent(&mux->common, &mux->mux);
++		ccu_mux_helper_set_parent(&mux->common, &mux->mux, 0); /* dcxo24M */
++		udelay(50);
++	} else if (event == POST_RATE_CHANGE || event == ABORT_RATE_CHANGE) {
++		udelay(50);
++		ccu_mux_helper_set_parent(&mux->common, &mux->mux, cpu_nb->orig);
++	}
++
++	return NOTIFY_OK;
++}
++
++static struct sun55iw3_cpu_pll_mux_nb sun55iw3_cpua_pll_nb = {
++	.clk_nb = { .notifier_call = sun55iw3_cpu_pll_mux_notifier },
++	.mux = &cpua_clk,
++};
++static struct sun55iw3_cpu_pll_mux_nb sun55iw3_cpub_pll_nb = {
++	.clk_nb = { .notifier_call = sun55iw3_cpu_pll_mux_notifier },
++	.mux = &cpub_clk,
+ };
+ 
+ static int sun55iw3_cpupll_probe(struct platform_device *pdev)
+@@ -271,9 +302,12 @@
+ 
+ 	sunxi_ccu_probe(pdev->dev.of_node, reg, &cpupll_desc);
+ 
+-	ccu_pll_notifier_register(&cpupll1_nb);
++	clk_notifier_register(pll_cpu1_clk.common.hw.clk,
++			      &sun55iw3_cpua_pll_nb.clk_nb);
++	clk_notifier_register(pll_cpu3_clk.common.hw.clk,
++			      &sun55iw3_cpub_pll_nb.clk_nb);
++	/* DSU PLL only: CPU PLLs skip SSC during mux-bypassed relock */
+ 	ccu_pll_notifier_register(&cpupll2_nb);
+-	ccu_pll_notifier_register(&cpupll3_nb);
+ 
+ 	dev_info(&pdev->dev, "Sunxi pll_cpu clk init OK\n");
+ 

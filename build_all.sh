@@ -328,7 +328,7 @@ ensure_qemu_binfmt() {
 
 sudo apt-get install swig flex bison gcc-arm-none-eabi cmake build-essential gcc-aarch64-linux-gnu mtools bc pkg-config dialog -y
 sudo apt install mmdebstrap ubuntu-keyring debian-keyring automake autoconf gcc make pixz libconfuse2 libconfuse-common libconfuse-dev -y
-sudo apt install libgnutls\*
+sudo apt install -y dosfstools libssl-dev parted libgnutls\*
 
 ensure_qemu_binfmt
 

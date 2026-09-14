@@ -74,6 +74,11 @@ patch_kernel()
     fi
     patchdev=$1
     targetdir=$2
+    # Restore tracked files so an updated patch is not applied on top of an
+    # older version of itself (dry-run then conflicts and exits 2).
+    if [ -d ${targetdir}/.git ];then
+        git -C ${targetdir} -c safe.directory=${targetdir} checkout -- .
+    fi
     if [ -d ${workspace}/../patches/kernel/${patchdev}/patches ];then
         for pth in $(ls ${workspace}/../patches/kernel/${patchdev}/patches)
 	do

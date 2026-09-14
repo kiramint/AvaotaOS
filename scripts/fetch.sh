@@ -95,6 +95,7 @@ clone_linux()
         remote_url=$(git config --get remote.origin.url)
         current_branch=$(git symbolic-ref --short HEAD)
         if [[ "${remote_url}" == "${LINUX_REPO}" && "${current_branch}" == "${LINUX_BRANCH}" ]];then
+            git -c safe.directory="${workspace}/linux" checkout -- . 2>/dev/null
             git pull
             popd
         else

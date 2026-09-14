@@ -153,14 +153,17 @@ CONFIG_AW_REGULATOR_AXP2101=y
 CONFIG_AW_REGULATOR_PMU_EXT=y
 CONFIG_AW_INPUT_AXP2101_PEK=y
 CONFIG_AW_AXP2202_POWER=y
-# 主线 u-boot/BL31 下 cluster1 的 pll-cpu3 (P 分频在 CPUB mux 寄存器) 首次切频在
-# clk_set_rate/__clk_notify 死循环 (RCU stall), 禁用 BSP cpufreq 让 CPU 停在 u-boot
-# 设定的 768MHz; 后续如需 DVFS 再评估 (OPP 表无电压信息本就不完整)
-# CONFIG_AW_CPUFREQ_DT is not set
-# CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM is not set
+# AXP323/AXP1530 DCDC1+DCDC2 are wired as a polyphase CPU rail on A1.
+# Use the BSP's synchronized DVM path when cpufreq changes vdd-cpub.
+CONFIG_AW_AXP1530_WORKAROUND_DVM=y
+# DVFS: 0008 在 pll-cpu1/pll-cpu3 切频时把 CPU mux 切到 dcxo24M
+# 0009 给 cpu4 接上 axp1530-dcdc1 (vdd-cpub); 缺供电时 performance 拉满会欠压死机
+CONFIG_AW_CPUFREQ_DT=y
+CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM=y
 CONFIG_AW_DMC_DEVFREQ=y
 CONFIG_AW_EVENT_DFI=y
-CONFIG_AW_SUNXI_DSUFREQ=y
+# DSU (pll-cpu2) 同样没有 mux 旁路, 会在 CPU 切频回调里 clk_set_rate 卡死
+# CONFIG_AW_SUNXI_DSUFREQ is not set
 CONFIG_AW_MSGBOX=y
 CONFIG_AW_HWSPINLOCK=y
 CONFIG_AW_REMOTEPROC=y

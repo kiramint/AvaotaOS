@@ -1,0 +1,19 @@
+--- a/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts
++++ b/arch/arm64/boot/dts/allwinner/sun55i-t527-avaota-a1.dts
+@@ -2971,6 +2971,16 @@
+ 	cpu-supply = <&reg_dcdc1>;
+ };
+ 
++/*
++ * Cluster1 (cpu4-7 / 1.8 GHz) is powered by AXP1530 DCDC1 (vdd-cpub).
++ * Without this, cpufreq-dt changes pll-cpu3 but never raises the rail.
++ * Default governor is performance, so the first policy init jumps
++ * 840 MHz -> max at the u-boot 768 MHz voltage and the cluster dies.
++ */
++&cpu4 {
++	cpu-supply = <&reg_ext_axp1530_dcdc1>;
++};
++
+ &dsufreq {
+ 	dsu-supply = <&reg_dcdc1>;
+ };
