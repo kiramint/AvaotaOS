@@ -1,6 +1,6 @@
 # AvaotaOS 当前状态
 
-> 2026-08-29。目标: Avaota A1 / T527 / Ubuntu 24.04 noble gnome / 内核 5.15.154 BSP。
+> 2026-09-14。目标: Avaota A1 / T527 / Ubuntu 24.04 noble gnome / 内核 5.15.154 BSP。
 > 详细排查过程在 `AGENTS.md`。下次会话先读本文再动手。
 
 ## 已经能用的
@@ -11,6 +11,7 @@
 - 板载 0.96" ST7789V `/dev/fb0`; DRM `card0-HDMI-A-1` / `card0-DP-1` (线没插时 disconnected 是正常的)
 - GPU panfrost Mali-G57, 最高 696MHz (648/744/792 被拒是 vf3920 bin 规格, 不是故障)
 - 音频 codec 内核正常 (`sudo aplay -l` 能列出 `audiocodec`); 用户已进 `audio` 组, 需重新登录后再测
+- PMIC 备注: 板上丝印为 AXP717B; SyterKit eFEX 将 I2C 0x35/0x36 按 AXP2202/AXP1530 模型初始化, 主线 U-Boot DTS 则按 AXP717/AXP323 描述同一组电源。Linux 当前 `reg_cldo3` / `reg_ext_axp1530_dcdc1` 映射与实测 DVM 电压一致; 因而 SyterKit 没有单独的 `axp717b` 文件并不表示 PMIC 未使用, 精确料号仍待原理图或 I2C ID 确认
 - 构建: 显示修复、gzip initramfs、hostname、用户组、init-resize wants 链接、aic8800 模块加载、smartmontools mask、bluez/cloud-guest-utils 包
 
 默认账号 `avaota` / `avaota`, sudo 要密码。
@@ -27,11 +28,25 @@
 - 看 mmdebstrap 是否加 `--aptopt='Apt::Install-Recommends "true"'` 或把常用应用写进 `gnome-packages.list`
 - 现卡 3G 根分区可能装不下, 先扩容再 apt
 
-### 2. 无 cpufreq, CPU 锁 768MHz — 中
+### 2. cpufreq / cluster1 切频死机 — 已解决并验证 (2026-09-14)
 
-故意关掉 `CONFIG_AW_CPUFREQ_DT` / `CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM`: 主线 BL31 下 cluster1 (`pll-cpu3`) 首次切频在 `clk_set_rate`/`__clk_notify` 死循环。8×A55 停在 u-boot 的 768MHz。规格大约 cluster0 ≤1.42GHz、cluster1 ≤1.8–2.0GHz, CPU 活大约只有 40–50%。GPU/显示不受影响。
+根因是两件事叠在一起, 不是单纯打开 `CONFIG_AW_CPUFREQ_DT` 就能好:
 
-下一步: 修 cluster1 pll-cpu3, 不要直接打开这两个 config。
+1. **pll-cpu3 重锁时 cluster1 还挂在 PLL 上**会冻核。`0008` 在 PRE 把 CPU mux 切到 `dcxo24M`, POST/ABORT 再切回; CPU PLL 不再开 SSC。第一版用 `pll-peri0-600m` 不够。
+2. **`cpu@400` 没有 `cpu-supply`**。日志里 CPU4 `768→840` 已经成功 (`EM: invalid perf. state: -22` 印出来了), 随后默认 `performance` 调速器把 cluster1 拉到最高频, 电压仍停在 u-boot 的 ~0.9V, 当场死机。主线 dts 写明 AXP1530/AXP323 DCDC1 = `vdd-cpub`。`0009` 给 `&cpu4` 接上 `<&reg_ext_axp1530_dcdc1>`。
+3. **AXP1530/AXP323 双相 DVM**: 主线 DTS 注明 DCDC2 与 DCDC1 并联, SyterKit 会同步设置两路; 已在 defconfig 启用 `CONFIG_AW_AXP1530_WORKAROUND_DVM`。2026-09-14 实测两路在 1.15 V 满载时保持一致。
+4. **DSUFREQ 仍关**: `pll-cpu2` 同样没有 mux 旁路, 两个 policy 起来后会在 CPU 切频回调里 `clk_set_rate` 卡死。先保证 CPU DVFS 能起。
+
+2026-09-14 实测: 无 `cpufreq.off`, 两个 policy 正常建立; CPU0 达到 1.416 GHz, CPU4 达到 1.8 GHz。8 个 CPU 满载 20 秒无复位, uptime 持续增长。板上检查:
+
+```bash
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
+cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_cur_freq
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_frequencies
+cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_available_frequencies
+```
+
+重编: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done` 后 `./build_all.sh` (mklinux 现在会 `git checkout -- .` 再打补丁, 更新后的 0008 不会打在旧 0008 上面)。
 
 ### 3. 蓝牙未通 — 低
 
@@ -79,5 +94,6 @@ df -hT /
 
 - rootfs tar 存在则 skip mkrootfs (`rootfs-noble-gnome.tar.gz`)
 - 内核缓存键是 `${LINUX_CONFIG}-${LINUX_PATHDIR}`, **只改 patches/ 不会自动重编**, 需删 `.done`
+- `mklinux.sh` 打补丁前会 `git checkout -- .` 还原 linux 树, 再按 `patches/kernel/avaota-a1-bsp/patches/` 顺序应用 (0001–0009) 并覆盖 defconfig。更新已有补丁不必再手工还原源码
 - `pack.sh` 每次都跑; 新 init-resize / bluetooth 脚本 / 用户组会打进旧 tar, 不必为这些重建 rootfs
 - 新桌面应用列表要改 `gnome-packages.list` 或 mmdebstrap recommends, **必须重建 rootfs tar**

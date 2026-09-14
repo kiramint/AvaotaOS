@@ -1,6 +1,6 @@
 # Avaota A1 (T527) 显示问题排查记录
 
-> 更新时间: 2026-08-29 (已能进 systemd/GNOME; 待办见仓库根目录 status.md)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
+> 更新时间: 2026-09-14 (已能进 systemd/GNOME; cpufreq 0008/0009 + AXP1530 DVM 已在板上验证; 待办见仓库根目录 status.md)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
 
 ## 构建默认值调整 (2026-08-23)
 
@@ -98,10 +98,11 @@ FAT 分区离线检查工具链 (mtools, 免 root): `xz -dc img.xz | dd bs=512 s
 
 **根因**: cluster0 用 `pll-cpu1` (切频正常), cluster1 用 `pll-cpu3` (P 分频在 CPUB mux 寄存器 0x0064, 路径特殊), BSP cpufreq 驱动 (`CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM` 注册 cpufreq-dt) 对 pll-cpu3 首次切频死循环。u-boot 把 CPU 留在 768MHz (日志 "unlisted initial frequency 768000"), 不切频本可正常起。
 
-**修复**: defconfig 覆盖文件禁用 `CONFIG_AW_CPUFREQ_DT` + `CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM`, CPU 停在 u-boot 设定的 768MHz。先保证能起, DVFS 后续再评估 (OPP 表本就无电压信息)。
+**当时的修复**: defconfig 覆盖文件禁用 `CONFIG_AW_CPUFREQ_DT` + `CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM`, CPU 停在 u-boot 设定的 768MHz。先保证能起。
 
 - **免重编快速验证**: 卡上 extlinux.conf append 加 `cpufreq.off=1` (5.15 支持, 见 kernel-parameters.txt)
 - 触发重编: `sudo rm build_dir/avaota-a1-kernel-pkgs/.done`
+- **后续**: 2026-09-13 第十七轮重新打开 cpufreq, 补 mux 旁路 (0008) 和 cpu4 供电 (0009)。第七轮对 "OPP 表无电压信息" 的判断不完整 — cluster0 有 `cpu-supply`, 0V 的是别的 vf bin 档; cluster1 才是完全没接 regulator。
 
 ## 第八轮 (2026-08-23, psci_checker 开机自测卡死)
 
@@ -218,9 +219,58 @@ AIC8800 是 WiFi=SDIO / BT=UART (uart1=`/dev/ttyAS1`, PG6-9; `bt_rst`=PG12; `bt_
 - 另需 `rfkill unblock` 松开 `sunxi-bt` (PG12 复位); `gpiofind` 必须 sudo
 - 构建已加: `patches/.../0007-aic8800-btlpm-dont-fail-probe-on-wake-irq.patch` (wake IRQ 失败不让 probe 失败); `target/services/avaota-bluetooth/` 开机服务 (wake + `hciattach -s 1500000 /dev/ttyAS1 any 1500000 flow nosleep`); 包列表 `bluez`。**0007 需内核重编才进现卡**: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done`。**BT 仍未通, 低优先级待排查**
 
-GPU OPP 648/744/792 被拒是 **vf3920 bin 规格**, 额定最高 696MHz, 不是故障。CPU 无 cpufreq 是故意关的 (cluster1 pll-cpu3 切频死机), 8 核锁 u-boot 768MHz, **影响 CPU 性能**, 中优先级。
+GPU OPP 648/744/792 被拒是 **vf3920 bin 规格**, 额定最高 696MHz, 不是故障。CPU 无 cpufreq 当时是故意关的 (cluster1 pll-cpu3 切频死机), 8 核锁 u-boot 768MHz; 见第十七轮。
+
+### 第十七轮 (2026-09-13/14, 打开 cpufreq: mux 旁路 + cluster1 供电)
+
+第七轮为了能起把 DVFS 整段关掉。本次要真正切频, 不能只打开 `CONFIG_AW_CPUFREQ_DT` / `CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM`。
+
+**时钟树**:
+
+- 8×A55, 两簇。cluster0 (cpu0–3) 时钟 `CLK_PLL_CPU1`, CPUA mux 0x60; cluster1 (cpu4–7) 时钟 `CLK_PLL_CPU3`, CPUB mux 0x64 (pll-cpu3 的 P 分频也在这档 [17:16])
+- CPU PLL CCU 基址 0x08817000, 驱动 `bsp/drivers/clk/sunxi-ng/ccu-sun55iw3-displl.c`
+- mux 父时钟: 0 `dcxo24M`, 1 `osc32k`, 2 `iosc`, 3 PLL, 4 `pll-peri0-600m`, 5 `pll-cpu0`
+- DTS 里 CPU 的 `clocks` 直接指向 PLL, CCF 不知道中间还有 mux。BSP 改 PLL 频率时从不切 mux, cluster1 挂在正在失锁的 pll-cpu3 上会冻核, 看起来像 `__clk_notify` 死循环, 并能把 DSU 一起卡死
+- DSU 用 `pll-cpu2` (寄存器 0x006c 有定义但驱动没建 mux)。`CONFIG_AW_SUNXI_DSUFREQ` 等两个 cpufreq policy 都在之后, 在 cpufreq-dt `set_target` 回调里 `clk_set_rate(pll-cpu2)`, 同样没有旁路
+- u-boot 把两簇留在 768 MHz, 这个频率不在 OPP 表里, 所以 `cpufreq_online` 必须跳到最近档 (CPU0→792, CPU4→840)
+- 默认 governor 是 `performance`, policy 建完立刻拉最高频
+- `&cpu0 { cpu-supply = <&reg_dcdc1>; }` (AXP717/AXP2202 DCDC1 = vdd-cpul)。`cpu@400` **没有 cpu-supply**。主线 `sun55i-t527-avaota-a1.dts` 写明 AXP323/AXP1530 DCDC1 = vdd-cpub, DCDC2 与 DCDC1 并联
+
+**第一版 0008 (已烧, 仍卡)**: `ccu_mux_notifier_register` 旁路到 peri0-600m (index 4), SSC notifier 仍挂在 pll-cpu1/3 上。用户串口:
+
+```
+cpufreq: cpufreq_online: CPU0: ... 768000 KHz, changing to: 792000 KHz
+cpu cpu0: EM: created perf domain
+cpufreq: cpufreq_online: CPU4: ... 768000 KHz, changing to: 840000 KHz
+cpu cpu4: EM: invalid perf. state: -22
+```
+
+这比第七轮 **更远**: "changing to: 840000" 在 `clk_set_rate` **之前**, 但 `EM: invalid perf. state: -22` 在 **之后**。840 MHz 那次 set_rate 已经返回。随后 `cpufreq_init_policy` 把 performance 拉到 cluster1 最高档 (~1.8 GHz), 电压还停在 u-boot 的 ~0.9 V, 大核欠压死机。CPU0 的 720/1032/1128/1296 MHz 被拒是这些档在本片 vf bin 上 `opp-microvolt=0`, 有 regulator 就会丢; CPU4 没 regulator, `_opp_supported_by_regulators` 对全部 OPP 放行 (含 0 V), 所以 EM 算功耗得到 -22。
+
+**当前补丁 (2026-09-14 已在板上验证)**:
+
+| 补丁/配置 | 作用 |
+|---|---|
+| `0008-clk-sun55iw3-cpupll-reparent-cpu-during-pll-relock.patch` | 自定义 PRE/POST/**ABORT** notifier: 重锁窗口把 CPUA/CPUB mux 切到 `dcxo24M` (index 0, 不用 peri0); 去掉 pll-cpu1/3 的 SSC notifier, 只给 pll-cpu2 留 SSC |
+| `0009-arm64-dts-avaota-a1-cpu4-axp1530-cpu-supply.patch` | `&cpu4 { cpu-supply = <&reg_ext_axp1530_dcdc1>; }` |
+| defconfig | `CONFIG_AW_AXP1530_WORKAROUND_DVM=y`, `CONFIG_AW_CPUFREQ_DT=y`, `CONFIG_ARM_AW_SUN50I_CPUFREQ_NVMEM=y`, **`# CONFIG_AW_SUNXI_DSUFREQ is not set`** |
+| `mklinux.sh` `patch_kernel()` | 打补丁前 `git checkout -- .`。第一版 0008 已经在 linux 树上时, 更新后的 0008 dry-run 会冲突 exit 2 |
+| `fetch.sh` `clone_linux()` | pull 前同样 `git checkout -- .` (与 u-boot 一致) |
+
+DSU 仍关: 开机频率留在 u-boot 的 pll-cpu2。CPU 拉到 1.8 GHz 时 DSU 可能偏慢 (驱动按 3/4 CPU 频算), 先保证 CPU DVFS 能起, 需要时再给 pll-cpu2 加 mux 旁路。
+
+板上验证命令:
+
+```bash
+cat /sys/devices/system/cpu/cpu{0,4}/cpufreq/scaling_cur_freq
+cat /sys/devices/system/cpu/cpu{0,4}/cpufreq/scaling_available_frequencies
+```
+
+CPU0 应能到 ~1.4 GHz 档, CPU4 应能到 ~1.8 GHz 档, 不再停在 768000。2026-09-14 已实测 8 个 CPU 满载 20 秒无复位。重编: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done` 后 `./build_all.sh`。
 
 ## 硬件/软件背景
+
+- **PMIC 识别备注**: 板上 PMIC 丝印为 **AXP717B**, 但各代码栈使用的兼容模型不同。SyterKit `sun55iw3/app_efex/init_dram/main.c` 同时初始化 AXP2202 (I2C 0x35, SoC 侧电源) 和 AXP1530 (I2C 0x36, 外部 CPU 电源, DCDC1/DCDC2 双相); 主线 U-Boot DTS 则将这两个地址描述为 AXP717 和 AXP323, SD 卡 CLDO3 配置走 AXP717 兼容路径。因而 SyterKit 中没有单独名为 `axp717b` 的驱动并不代表 PMIC 未被使用。当前 Linux DTS 沿用 `reg_cldo3` 和 `reg_ext_axp1530_dcdc1` 映射, DVM 已实测 DCDC1/DCDC2 在 1.15 V 满载时一致; 精确料号仍应以原理图或 I2C ID 最终确认。
 
 - 三个显示输出:
   1. **板载 0.96" 屏**: SPI ST7789V, 走 `/dev/fb0` (fbcon), **不在 DRM 桌面内** — GDM 看不见它
@@ -274,13 +324,14 @@ kmscube/modetest 是单节点路径所以能亮, 极易误导排查方向。
 
 - `/boot/extlinux/extlinux.conf`: `cma=64M` → `cma=256M` (双 2560x1440 屏需 ~90MB+ 扫描缓冲, 64M 必然 OOM; 备份 `.bak`)
 
-## 当前系统状态 (2026-08-29)
+## 当前系统状态 (2026-09-14)
 
-系统已能进 Ubuntu 24.04.4 + systemd + GDM。WiFi 可用, SSH (`ssh.socket`) 可用。待办优先级与下一步见仓库根目录 **`status.md`**。
+系统已能进 Ubuntu 24.04.4 + systemd + GDM。WiFi 可用, SSH (`ssh.socket`) 可用。cpufreq 补丁 0008/0009 和 AXP1530 DVM 已在板上验证。待办优先级与下一步见仓库根目录 **`status.md`**。
 
-- HDMI/DP: 驱动绑定 `card0-HDMI-A-1` / `card0-DP-1`; 最近一次实测两口均为 disconnected (线未插)
+- HDMI/DP: 驱动绑定 `card0-HDMI-A-1` / `card0-DP-1`; 最近一次实测两口均为 disconnected (线没插)
 - 板载 ST7789V `fb0` 240×135 正常; panfrost renderD128 正常, GPU 最高 696MHz (vf3920)
 - SD `mmcblk0` 工作 (0006 CCLK_DIV); eMMC `mmcblk1` 29.1G 空片
+- CPU: 旧镜像曾因 cpufreq 问题锁在 768 MHz; 当前镜像两个 policy 正常工作, CPU0 可到 1.416 GHz, CPU4 可到 1.8 GHz。8 CPU 满载 20 秒无复位。
 - 用户组 (构建侧已改, 现卡已手工加 audio/bluetooth/plugdev): sudo,video,render,dialout,tty,audio,bluetooth,plugdev
 - 一键显示修复: `scripts/fix-display.sh` (`--dp` 默认 / `--edp` 可选)
 
