@@ -1,6 +1,6 @@
 # Avaota A1 (T527) 显示问题排查记录
 
-> 更新时间: 2026-09-14 (已能进 systemd/GNOME; cpufreq 0008/0009 + AXP1530 DVM 已在板上验证; 待办见仓库根目录 status.md)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
+> 更新时间: 2026-09-14 (已能进 systemd/GNOME; cpufreq 0008/0009 已验证; HDMI 采集卡因 EDID 头全 0 被打成 DVI, 见第十八轮; 待办见仓库根目录 status.md)。目标设备: Avaota A1, T527, Ubuntu 24.04, 内核 5.15.154 BSP (sun4i-drm)。
 
 ## 构建默认值调整 (2026-08-23)
 
@@ -268,13 +268,39 @@ cat /sys/devices/system/cpu/cpu{0,4}/cpufreq/scaling_available_frequencies
 
 CPU0 应能到 ~1.4 GHz 档, CPU4 应能到 ~1.8 GHz 档, 不再停在 768000。2026-09-14 已实测 8 个 CPU 满载 20 秒无复位。重编: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done` 后 `./build_all.sh`。
 
+### 第十八轮 (2026-09-14, HDMI 采集卡无画面: EDID 头全 0 → DVI)
+
+HDMI 口接的是**采集卡**, 不是显示器。GDM/gnome-shell/panfrost 都在跑, 采集端没有画面。**不是 CPU 电源补丁弄坏显示栈**。
+
+根因: 采集卡 DDC 给出的 EDID 后半段可用 (CEA, 名称 **HDP-V104** / serial **demoset-1**), 但**前 16 字节永远是 `00`**, 没有标准头 `00 FF FF FF FF FF FF 00`。`drm_get_edid` 丢掉整份 EDID 后, BSP 驱动把口当成 DVI (不发 AVI infoframe)。采集卡要 HDMI 才能采到信号, DVI TMDS 就是黑的。
+
+现象:
+
+- `card0-HDMI-A-1` `status=connected`; 无 USB 键盘时 GDM greeter 空闲会 `enabled=disabled` `dpms=Off`, 采集也会跟着断
+- gnome-shell Wayland 已起来, `MUTTER_DEBUG_USE_KMS_MODIFIERS=0` 在, 没有 AFBC `Failed to lock front buffer`
+- 内核: `hdmi drv i2c read edid failed` → `use default edid modes` → **`hdmi drv select dvi output`** + `dw packet unset when dvi mode`
+- `i2ctransfer -y 31 w1@0x50 0x00 r128`: 前 16 字节全 `00`, 从 0x10 起是 EDID 1.3 + CEA。byte 0x01 单读也是 `0x00`, 不是 I2CM 突发读 bug
+- `inno phy wait rxsense lock timeout` 对采集卡常见 (多数不实现 RX sense), 不单独说明输出失败
+- 注入修复过 header 的 EDID 后: 79 个 HDMI 模式, **不再选 DVI**, CRTC `3840x2160@60`, vsync `err=0`, panfrost 会拉到 696MHz
+
+修复:
+
+| 补丁/脚本 | 作用 |
+|---|---|
+| `0010-drm-sunxi-hdmi-repair-zero-edid-header.patch` | `drm_get_edid` 失败时 raw 读 DDC, 若 0x12 是 EDID 1.x 或 block1 是 CEA, 补标准 header + checksum; 默认模式路径设 `is_hdmi=true` 不再回退 DVI |
+| `scripts/fix-hdmi-edid.sh` | 现卡免重编: 写 `/sys/devices/virtual/hdmi/hdmi/attr/edid_data` + `edid_debug=1` 再拨 HPD。现卡已装 `avaota-hdmi-edid.service` (kernel 吃到 0010 后可 disable) |
+
+现卡还关了 GDM greeter 空闲熄屏 (`idle-delay=0`), 否则没键盘几分钟 DPMS off, 采集卡也采不到。采集卡 CEA 把 4K60 标成 preferred; 采集端若只要 1080p, 在 GNOME 显示设置里改 1920x1080。
+
+重编: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done` 后 `./build_all.sh`。
+
 ## 硬件/软件背景
 
 - **PMIC 识别备注**: 板上 PMIC 丝印为 **AXP717B**, 但各代码栈使用的兼容模型不同。SyterKit `sun55iw3/app_efex/init_dram/main.c` 同时初始化 AXP2202 (I2C 0x35, SoC 侧电源) 和 AXP1530 (I2C 0x36, 外部 CPU 电源, DCDC1/DCDC2 双相); 主线 U-Boot DTS 则将这两个地址描述为 AXP717 和 AXP323, SD 卡 CLDO3 配置走 AXP717 兼容路径。因而 SyterKit 中没有单独名为 `axp717b` 的驱动并不代表 PMIC 未被使用。当前 Linux DTS 沿用 `reg_cldo3` 和 `reg_ext_axp1530_dcdc1` 映射, DVM 已实测 DCDC1/DCDC2 在 1.15 V 满载时一致; 精确料号仍应以原理图或 I2C ID 最终确认。
 
 - 三个显示输出:
   1. **板载 0.96" 屏**: SPI ST7789V, 走 `/dev/fb0` (fbcon), **不在 DRM 桌面内** — GDM 看不见它
-  2. **HDMI**: `card0-HDMI-A-1`, 接 27" QHD (2560x1440, EDID 型号 P27QBC-RG)
+  2. **HDMI**: `card0-HDMI-A-1`。当前接采集卡 (EDID 名称 HDP-V104 / serial demoset-1; 见第十八轮)。此前验证过 27" QHD (P27QBC-RG)
   3. **DP (实为 eDP)**: T527 eDP 控制器 `drm_edp@5720000`, 外接 2560x1440 显示器, **不走 EDID, 用 DTB 固定 timing**
 - DRM 驱动是 BSP sun4i-drm (内核内建), GPU 是 panfrost (renderD128)
 - 显示服务器: GDM + gnome-shell (Wayland), mutter 46.2
@@ -326,9 +352,9 @@ kmscube/modetest 是单节点路径所以能亮, 极易误导排查方向。
 
 ## 当前系统状态 (2026-09-14)
 
-系统已能进 Ubuntu 24.04.4 + systemd + GDM。WiFi 可用, SSH (`ssh.socket`) 可用。cpufreq 补丁 0008/0009 和 AXP1530 DVM 已在板上验证。待办优先级与下一步见仓库根目录 **`status.md`**。
+系统已能进 Ubuntu 24.04.4 + systemd + GDM。WiFi 可用, SSH (`ssh.socket`) 可用。cpufreq 补丁 0008/0009 和 AXP1530 DVM 已在板上验证。HDMI 采集卡无画面见第十八轮 (EDID 头全 0 → DVI)。待办优先级与下一步见仓库根目录 **`status.md`**。
 
-- HDMI/DP: 驱动绑定 `card0-HDMI-A-1` / `card0-DP-1`; 最近一次实测两口均为 disconnected (线没插)
+- HDMI/DP: 驱动绑定 `card0-HDMI-A-1` / `card0-DP-1`。HDMI 接采集卡 (HDP-V104 / demoset-1); 注入修复 EDID 后 4K60 HDMI 已 enable, 采集端应能收到画面。DP 没插线时 disconnected 正常
 - 板载 ST7789V `fb0` 240×135 正常; panfrost renderD128 正常, GPU 最高 696MHz (vf3920)
 - SD `mmcblk0` 工作 (0006 CCLK_DIV); eMMC `mmcblk1` 29.1G 空片
 - CPU: 旧镜像曾因 cpufreq 问题锁在 768 MHz; 当前镜像两个 policy 正常工作, CPU0 可到 1.416 GHz, CPU4 可到 1.8 GHz。8 CPU 满载 20 秒无复位。

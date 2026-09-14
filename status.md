@@ -6,9 +6,10 @@
 ## 已经能用的
 
 - 主线 u-boot v2026.07 + jernejsk ATF a523-v4, 能过 systemd, GDM 在跑
+- HDMI 接采集卡 (EDID 名称 HDP-V104 / demoset-1): 现卡已用 debug EDID 绕过全 0 header, 输出 4K60 HDMI 而非 DVI。内核补丁 0010 还没进现卡内核
 - SD 卡 `mmcblk0` 正常 (内核补丁 0006: sdc0 CCLK_DIV=/2)
 - WiFi AIC8800 `wlan0` 已联网; SSH 走 `ssh.socket` (镜像自带 openssh-server, 不必再装)
-- 板载 0.96" ST7789V `/dev/fb0`; DRM `card0-HDMI-A-1` / `card0-DP-1` (线没插时 disconnected 是正常的)
+- 板载 0.96" ST7789V `/dev/fb0`; DRM `card0-HDMI-A-1` / `card0-DP-1`。HDMI 接采集卡 (见下第 3 条)
 - GPU panfrost Mali-G57, 最高 696MHz (648/744/792 被拒是 vf3920 bin 规格, 不是故障)
 - 音频 codec 内核正常 (`sudo aplay -l` 能列出 `audiocodec`); 用户已进 `audio` 组, 需重新登录后再测
 - PMIC 备注: 板上丝印为 AXP717B; SyterKit eFEX 将 I2C 0x35/0x36 按 AXP2202/AXP1530 模型初始化, 主线 U-Boot DTS 则按 AXP717/AXP323 描述同一组电源。Linux 当前 `reg_cldo3` / `reg_ext_axp1530_dcdc1` 映射与实测 DVM 电压一致; 因而 SyterKit 没有单独的 `axp717b` 文件并不表示 PMIC 未使用, 精确料号仍待原理图或 I2C ID 确认
@@ -48,7 +49,16 @@ cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_available_frequencies
 
 重编: `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done` 后 `./build_all.sh` (mklinux 现在会 `git checkout -- .` 再打补丁, 更新后的 0008 不会打在旧 0008 上面)。
 
-### 3. 蓝牙未通 — 低
+### 3. HDMI 采集卡无画面 (EDID 头全 0 → DVI) — 内核补丁已写, 现卡已绕过
+
+HDMI 口接的是采集卡, 不是显示器。采集卡 EDID (HDP-V104 / demoset-1) 前 16 字节全 0, `drm_get_edid` 丢弃, BSP 驱动改走 **DVI 1080p** (不发 AVI), 采集端采不到。注入修复 header 的 EDID 后 4K60 HDMI 出图, vsync `err=0`。
+
+- 内核: `patches/.../0010-drm-sunxi-hdmi-repair-zero-edid-header.patch` (**还没进现卡**, 需删 `.done` 重编)
+- 现卡: `avaota-hdmi-edid.service` + `edid_debug=1`; GDM `idle-delay=0` (没键盘会熄屏, 采集也会断)
+- 免重编脚本: `scripts/fix-hdmi-edid.sh`
+- 采集端若只要 1080p: GNOME 显示设置改 1920x1080。kernel 吃到 0010 后可 `systemctl disable --now avaota-hdmi-edid`
+
+### 4. 蓝牙未通 — 低
 
 WiFi=SDIO 已通; BT=UART `ttyAS1` (PG6-9), 复位 PG12 (`sunxi-bt` rfkill), wake PG11。
 

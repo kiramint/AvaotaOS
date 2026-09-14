@@ -1,0 +1,145 @@
+--- a/bsp/drivers/drm/sunxi_drm_hdmi.c
++++ b/bsp/drivers/drm/sunxi_drm_hdmi.c
+@@ -20,6 +20,8 @@
+ #include <linux/of_device.h>
+ #include <linux/of_address.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/i2c.h>
++#include <linux/slab.h>
+ 
+ #include <drm/drm_of.h>
+ #include <drm/drm_connector.h>
+@@ -58,6 +60,8 @@
+ #endif
+ 
+ #define SUNXI_HDMI_EDID_LENGTH		(1024)
++#define SUNXI_HDMI_EDID_BLOCK		128
++#define SUNXI_HDMI_DDC_ADDR		0x50
+ #define SUNXI_HDMI_POWER_CNT	     4
+ #define SUNXI_HDMI_POWER_NAME	     40
+ 
+@@ -753,6 +757,98 @@
+ 	return 0;
+ }
+ 
++static const u8 _shdmi_edid_header[8] = {
++	0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00
++};
++
++static int _sunxi_drv_hdmi_i2c_edid_block(struct i2c_adapter *adap,
++					  u8 offset, u8 *buf)
++{
++	struct i2c_msg msgs[2] = {
++		{
++			.addr = SUNXI_HDMI_DDC_ADDR,
++			.flags = 0,
++			.len = 1,
++			.buf = &offset,
++		},
++		{
++			.addr = SUNXI_HDMI_DDC_ADDR,
++			.flags = I2C_M_RD,
++			.len = SUNXI_HDMI_EDID_BLOCK,
++			.buf = buf,
++		},
++	};
++	int ret = i2c_transfer(adap, msgs, 2);
++
++	return (ret == 2) ? 0 : -EIO;
++}
++
++static void _sunxi_drv_hdmi_edid_fix_block(u8 *blk)
++{
++	int i, sum = 0;
++
++	blk[127] = 0;
++	for (i = 0; i < 127; i++)
++		sum += blk[i];
++	blk[127] = (u8)((0x100 - (sum & 0xff)) & 0xff);
++}
++
++/*
++ * Some HDMI sinks (observed: HDP-V104 / "demoset-1" capture card) return a
++ * usable EDID 1.3 + CEA block but leave the first 8-16 bytes as 0x00.
++ * drm_get_edid rejects the header and checksum, and this driver then falls
++ * back to DVI. Capture cards need HDMI AVI infoframes or they record black.
++ */
++static bool _sunxi_drv_hdmi_edid_repairable(const u8 *raw, int len)
++{
++	if (len < SUNXI_HDMI_EDID_BLOCK)
++		return false;
++	if (!memcmp(raw, _shdmi_edid_header, sizeof(_shdmi_edid_header)))
++		return false;
++	if (raw[0x12] == 0x01 && raw[0x13] <= 0x04)
++		return true;
++	if (len >= 2 * SUNXI_HDMI_EDID_BLOCK && raw[126] >= 1 && raw[128] == 0x02)
++		return true;
++	return false;
++}
++
++static struct edid *_sunxi_drv_hdmi_repair_edid(struct sunxi_drm_hdmi *hdmi)
++{
++	u8 *raw;
++	int blocks = 1;
++
++	raw = kzalloc(2 * SUNXI_HDMI_EDID_BLOCK, GFP_KERNEL);
++	if (!raw)
++		return NULL;
++
++	if (_sunxi_drv_hdmi_i2c_edid_block(&hdmi->i2c_adap, 0, raw))
++		goto fail;
++
++	if (raw[126] >= 1) {
++		if (_sunxi_drv_hdmi_i2c_edid_block(&hdmi->i2c_adap,
++						   SUNXI_HDMI_EDID_BLOCK,
++						   raw + SUNXI_HDMI_EDID_BLOCK))
++			raw[126] = 0;
++		else
++			blocks = 2;
++	}
++
++	if (!_sunxi_drv_hdmi_edid_repairable(raw, blocks * SUNXI_HDMI_EDID_BLOCK))
++		goto fail;
++
++	memcpy(raw, _shdmi_edid_header, sizeof(_shdmi_edid_header));
++	_sunxi_drv_hdmi_edid_fix_block(raw);
++	if (blocks == 2)
++		_sunxi_drv_hdmi_edid_fix_block(raw + SUNXI_HDMI_EDID_BLOCK);
++
++	hdmi_inf("hdmi drv repaired edid header, blocks=%d\n", blocks);
++	return (struct edid *)raw;
++
++fail:
++	kfree(raw);
++	return NULL;
++}
++
+ static int _sunxi_drv_hdmi_read_edid(struct sunxi_drm_hdmi *hdmi)
+ {
+ 	int ret = -1;
+@@ -778,6 +874,10 @@
+ 	hdmi->hdmi_ctrl.drv_edid_data = NULL;
+ 	hdmi->hdmi_ctrl.drv_edid_data = drm_get_edid(&hdmi->sdrm.connector, &hdmi->i2c_adap);
+ 	if (IS_ERR_OR_NULL(hdmi->hdmi_ctrl.drv_edid_data)) {
++		hdmi_wrn("hdmi drv i2c read edid failed, try header repair\n");
++		hdmi->hdmi_ctrl.drv_edid_data = _sunxi_drv_hdmi_repair_edid(hdmi);
++	}
++	if (IS_ERR_OR_NULL(hdmi->hdmi_ctrl.drv_edid_data)) {
+ 		hdmi_err("hdmi drv i2c read edid failed\n");
+ 		hdmi->hdmi_ctrl.drv_edid_data = NULL;
+ 		ret = -1;
+@@ -2639,8 +2739,13 @@
+ 		}
+ 	}
+ 
++	/*
++	 * HPD already said a sink is present. Defaulting to DVI (no AVI
++	 * infoframes) makes HDMI-only sinks (capture cards) record black.
++	 */
++	info->is_hdmi = true;
+ 	info->hdmi.y420_dc_modes = 0;
+-	info->color_formats = 0;
++	info->color_formats = DRM_COLOR_FORMAT_RGB444;
+ 
+ 	return ret;
+ }
