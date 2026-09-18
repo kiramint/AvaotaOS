@@ -15,19 +15,28 @@
 - PMIC 备注: 板上丝印为 AXP717B; SyterKit eFEX 将 I2C 0x35/0x36 按 AXP2202/AXP1530 模型初始化, 主线 U-Boot DTS 则按 AXP717/AXP323 描述同一组电源。Linux 当前 `reg_cldo3` / `reg_ext_axp1530_dcdc1` 映射与实测 DVM 电压一致; 因而 SyterKit 没有单独的 `axp717b` 文件并不表示 PMIC 未使用, 精确料号仍待原理图或 I2C ID 确认
 - 构建: 显示修复、gzip initramfs、hostname、用户组、init-resize wants 链接、aic8800 模块加载、smartmontools mask、bluez/cloud-guest-utils 包
 
+- 内核 defconfig 已补 snap 所需的 ext4 security xattr, 以及 NFS/CIFS fscache (见下「内核配置」). **现卡内核还没吃到**
+
 默认账号 `avaota` / `avaota`, sudo 要密码。
 
 ## 待办 (按优先级)
 
-### 1. GNOME 缺常见应用 — 高
+### 1. GNOME 缺常见应用 — 构建已修, 现卡/旧 tar 未吃到
 
-`os/noble/gnome-packages.list` 只有一行 `ubuntu-desktop`。`mkrootfs.sh` 用 mmdebstrap `--include=...`, **默认不装 Recommends**。Ubuntu 桌面里 Firefox、LibreOffice、gnome-software、文件归档工具等多半是 Recommends, 所以 metapackage 装了仍像精简桌面。
+`ubuntu-desktop` 是 metapackage: **Depends** 只有 GDM/gnome-shell/nautilus 等壳, Firefox、LibreOffice、gnome-software、eog、evince、file-roller、gnome-text-editor 等全是 **Recommends**。`mmdebstrap --include` **默认不装 Recommends** (和板上 `apt install` 相反), 所以镜像里 metapackage 在、应用不在。卸载再装 `ubuntu-desktop` 会按 Ubuntu 默认把 Recommends 全拉回来, 看起来像"少了一大堆依赖"。
 
-下一步建议:
+第一版 `apt-get install --install-recommends ubuntu-desktop` **无效**: metapackage 在 mmdebstrap 里已经装过, apt 报 already newest 然后 0 packages, Recommends 不会补。2026-09-18 的 973MB tar 仍缺 eog/evince/LibreOffice/gnome-software/Yaru 等 (~100 个 Recommends)。
 
-- 对比官方 `ubuntu-desktop` / `ubuntu-desktop-minimal` 的 Depends vs Recommends
-- 看 mmdebstrap 是否加 `--aptopt='Apt::Install-Recommends "true"'` 或把常用应用写进 `gnome-packages.list`
-- 现卡 3G 根分区可能装不下, 先扩容再 apt
+现已改成 `apt-cache depends` 展开 Recommends 再按包名安装 (仍跳过 firefox/thunderbird/snapd 的 snap 壳, 以及 cloud-init/flash-kernel)。
+
+要吃到: **必须删 rootfs tar 再编**, pack 不会重建 rootfs。旧 973MB tar 不能用。
+
+```bash
+sudo rm -f build_dir/rootfs-noble-gnome.tar.gz
+./build_all.sh
+```
+
+现卡若根分区仍是 ~3G, 先扩容再 `sudo apt install --install-recommends ubuntu-desktop` (会装 LibreOffice 等, 体积明显变大)。Firefox 在 noble 是 snap, 本构建不预装。
 
 ### 2. cpufreq / cluster1 切频死机 — 已解决并验证 (2026-09-14)
 
@@ -84,6 +93,22 @@ hciconfig -a   # 成功则非零 MAC、UP RUNNING、RX≠0
 ```
 
 内核重编 (吃 0007): `sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done`
+
+### 5. snapd setcap EOPNOTSUPP + 网络文件系统 — defconfig 已改, 需重编内核
+
+`snapd` postinst `setcap` 报 Operation not supported: 缺 `CONFIG_EXT4_FS_SECURITY` (file capabilities 走 ext4 `security.*` xattr)。已写入板级 defconfig, 并补:
+
+- snap: `EXT4_FS_POSIX_ACL`, `SQUASHFS_XATTR`, `CGROUP_BPF`
+- NFS/CIFS: `FSCACHE` + `CACHEFILES` + `NFS_FSCACHE` + `CIFS_FSCACHE`; NFS 用 kernel DNS (关掉 LEGACY_DNS); `NFSD_V4_SECURITY_LABEL`
+- CIFS/SMB/NFS/BTRFS 主体本来就是 y (含 ACL/xattr/NFSv4.2/ksmbd); 关掉不安全的 `CIFS_DEBUG_DUMP_KEYS`
+- 未开 RDMA `CIFS_SMB_DIRECT` / `SMB_SERVER_SMBDIRECT` (这块板没有 IB)
+
+```bash
+sudo rm -f build_dir/avaota-a1-kernel-pkgs/.done
+./build_all.sh
+```
+
+新内核起来后: `zcat /proc/config.gz | grep EXT4_FS_SECURITY` 应为 y, 然后 `sudo apt install -f` 或 `sudo dpkg --configure snapd`.
 
 ## 其它已知、暂不挡用
 

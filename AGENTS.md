@@ -17,6 +17,9 @@
 | DP 口 eDP→DP 模式 (EDID 自动) | `patches/kernel/avaota-a1-bsp/patches/0001-*.patch` (内核 dts: `&drm_edp` compatible 覆盖为 `allwinner,drm-dp`) |
 | cma=256M | `boards/avaota-a1.conf` BOOTARGS |
 | mutter AFBC 黑屏绕过 (仅 gnome) | `scripts/mkrootfs.sh` `setup_display_fixes()`: gdm drop-in + /etc/environment |
+| ubuntu-desktop Recommends (仅 gnome) | `scripts/mkrootfs.sh` `install_desktop_recommends()`: mmdebstrap 不装 Recommends, chroot 里补; 跳过 firefox/snapd/cloud-init/flash-kernel |
+| snapd setcap EOPNOTSUPP | defconfig: `EXT4_FS_SECURITY` / `EXT4_FS_POSIX_ACL` / `SQUASHFS_XATTR` / `CGROUP_BPF` (file capabilities 走 ext4 `security.*` xattr) |
+| NFS/CIFS 本地缓存 | defconfig: `FSCACHE` + `CACHEFILES` + `NFS_FSCACHE` + `CIFS_FSCACHE`; NFS 改 kernel DNS; 关掉 `CIFS_DEBUG_DUMP_KEYS` |
 | 用户组 video,render,dialout,tty,audio,bluetooth,plugdev | `scripts/pack.sh` `setup_users()`: usermod -aG (组不存在则 `groupadd -f`) |
 | 内核缺失配置 (AppArmor/nftables/VETH/WIREGUARD/容器栈等) | `patches/kernel/avaota-a1-bsp/files/arch/arm64/configs/sun55i_t527_bsp_defconfig` (原版+追加) |
 

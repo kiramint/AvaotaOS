@@ -1,8 +1,8 @@
 name: Build Release
 
+# Tag-triggered builds live in release-on-tag.yaml.
+# Keep this file dispatch-only so creating a Release does not start a second build.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
   
 permissions:

@@ -1,0 +1,124 @@
+# Push a tag like v0.3.1 to build images and publish a GitHub Release.
+name: Release on tag
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      types:
+        description: "Comma-separated rootfs types (cli, gnome)"
+        required: false
+        default: "cli,gnome"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        type: [cli, gnome]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake swig flex bison bc pkg-config dialog \
+            gcc-aarch64-linux-gnu gcc-arm-none-eabi \
+            mtools dosfstools parted pixz libssl-dev \
+            mmdebstrap qemu-user-static ubuntu-keyring debian-keyring \
+            libconfuse-dev libgnutls28-dev \
+            python3 python3-setuptools git wget curl rsync xz-utils
+          sudo systemctl restart systemd-binfmt || true
+          test -e /proc/sys/fs/binfmt_misc/qemu-aarch64
+
+      - name: Build image
+        run: |
+          sudo -E bash build_all.sh \
+            -b avaota-a1 \
+            -m http://ports.ubuntu.com/ubuntu-ports \
+            -v noble \
+            -t ${{ matrix.type }} \
+            -u avaota \
+            -p avaota \
+            -s avaota \
+            -k no \
+            -g bsp \
+            -i no \
+            -o no \
+            -e no
+          ls -lh build_dir/AvaotaOS-*.img.xz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: avaotaos-noble-${{ matrix.type }}
+          path: build_dir/AvaotaOS-*.img.xz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download images
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          ls -lh dist
+          NOTES="$(mktemp)"
+          {
+            echo "AvaotaOS ${TAG} (Avaota A1, Ubuntu 24.04 noble, BSP kernel)."
+            echo
+            echo "Default login: \`avaota\` / \`avaota\` (sudo needs the password). Serial: ttyAS0 115200."
+            echo
+            echo "## Known issues"
+            echo
+            echo "- GNOME images from this builder do **not** include ubuntu-desktop Recommends (LibreOffice, evince, etc.). On the board: \`sudo apt install --install-recommends ubuntu-desktop\` after growing the rootfs."
+            echo "- Firefox is a snap. It cannot be fully installed in the qemu-user rootfs chroot (\`snapd\` \`setcap\` → Operation not supported). Install on the device after a kernel with \`CONFIG_EXT4_FS_SECURITY\`."
+            echo "- See README.md and status.md."
+          } > "${NOTES}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/AvaotaOS-*.img.xz --clobber
+          else
+            gh release create "${TAG}" dist/AvaotaOS-*.img.xz \
+              --title "AvaotaOS ${TAG}" \
+              --notes-file "${NOTES}"
+          fi

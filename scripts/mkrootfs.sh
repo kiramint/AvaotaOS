@@ -122,12 +122,17 @@ run_debootstrap(){
         exit 2
     fi
 
+    # mmdebstrap does not install Recommends (unlike apt on a real Ubuntu
+    # desktop). ubuntu-desktop's Depends are only the shell/GDM core;
+    # Firefox, LibreOffice, gnome-software, file-roller, etc. are Recommends
+    # and get filled in later by install_desktop_recommends().
     if [ "${ARCH}" == "arm64" ];then
         sudo mmdebstrap --architectures=arm64 \
         --include="${PACKAGES}" \
         ${VERSION} ${ROOTFS} \
         "deb ${MIRROR} ${VERSION} ${LIST}" \
-        "deb ${MIRROR} ${VERSION}-updates ${LIST}" || {
+        "deb ${MIRROR} ${VERSION}-updates ${LIST}" \
+        "deb ${MIRROR} ${VERSION}-security ${LIST}" || {
             echo "mmdebstrap failed!"
             exit 2
         }
@@ -136,7 +141,8 @@ run_debootstrap(){
         --include="${PACKAGES}" \
         ${VERSION} ${ROOTFS} \
         "deb ${MIRROR} ${VERSION} ${LIST}" \
-        "deb ${MIRROR} ${VERSION}-updates ${LIST}" || {
+        "deb ${MIRROR} ${VERSION}-updates ${LIST}" \
+        "deb ${MIRROR} ${VERSION}-security ${LIST}" || {
             echo "mmdebstrap failed!"
             exit 2
         }
@@ -237,6 +243,59 @@ mkdir -p ${ROOTFS}/etc/initramfs-tools/conf.d
 echo "COMPRESS=gzip" > ${ROOTFS}/etc/initramfs-tools/conf.d/avaota-compress.conf
 }
 
+install_desktop_recommends(){
+# mmdebstrap --include 只跟 Depends, 不跟 Recommends。ubuntu-desktop 的
+# Depends 只有 GDM/gnome-shell 壳; 计算器/看图/LibreOffice/Yaru 全是 Recommends。
+#
+# 坑: metapackage 已经装上时, `apt-get install --install-recommends ubuntu-desktop`
+# 会 no-op ("already the newest version"), 不会补以前跳过的 Recommends。
+# 必须把 Recommends 展开成包名再 install。
+#
+# 排除项:
+#   firefox/thunderbird/snapd — noble 里是 snap 壳, qemu-user chroot 里
+#     snapd 无法 seed, 会把整次构建卡死或装一个空壳
+#   cloud-init — 和本镜像的 init-resize/hostname 冲突
+#   flash-kernel — 给 Debian 式 flash-kernel/u-boot 用, 会搅 extlinux
+if [ "${TYPE}" = "cli" ];then
+    return 0
+fi
+if [ ! -f ../os/${VERSION}/${TYPE}-packages.list ];then
+    echo "no ${TYPE}-packages.list, skip desktop recommends."
+    return 0
+fi
+echo "install Recommends of ${TYPE} metapackages (mmdebstrap skipped them)."
+
+# mmdebstrap 有的版本会把 Install-Recommends false 写进 chroot, 清掉以免
+# 后续 apt 和这次安装行为不一致。
+rm -f ${ROOTFS}/etc/apt/apt.conf.d/00mmdebstrap \
+      ${ROOTFS}/etc/apt/apt.conf.d/99mmdebstrap
+
+LC_ALL=C LANGUAGE=C LANG=C DEBIAN_FRONTEND=noninteractive \
+    chroot ${ROOTFS} /bin/bash -c 'apt-get update' \
+    || { echo "apt-get update failed"; exit 2; }
+
+local metas recs
+metas="$(tr '\n' ' ' < ../os/${VERSION}/${TYPE}-packages.list)"
+if [ "${TYPE}" = "gnome" ];then
+    metas="${metas} ubuntu-desktop-minimal"
+fi
+
+recs=$(LC_ALL=C chroot ${ROOTFS} /bin/bash -c "apt-cache depends ${metas}" \
+    | awk '/Recommends:/{print $2}' | tr -d '<>' | sort -u \
+    | grep -vE '^(firefox|firefox-esr|thunderbird|snapd|cloud-init|flash-kernel)$' \
+    | tr '\n' ' ')
+if [ -z "${recs// }" ];then
+    echo "ERROR: apt-cache depends returned no Recommends for: ${metas}"
+    exit 2
+fi
+echo "desktop Recommends to install: ${recs}"
+
+LC_ALL=C LANGUAGE=C LANG=C DEBIAN_FRONTEND=noninteractive \
+    chroot ${ROOTFS} /bin/bash -c \
+    "apt-get install --install-recommends --ignore-missing -y ${recs}" \
+    || { echo "desktop recommends install failed!"; exit 2; }
+}
+
 setup_hostname_fstab(){
 echo "${BOARD_NAME}" > ${ROOTFS}/etc/hostname
 # Ubuntu: 127.0.1.1 才是本机主机名; 127.0.0.1 留给 localhost。
@@ -320,6 +379,7 @@ setup_dhcp
 setup_firstrun
 setup_display_fixes
 setup_initramfs
+install_desktop_recommends
 clean_rootfs
 setup_hostname_fstab
 setup_board_services
